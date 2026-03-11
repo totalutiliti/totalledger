@@ -1,0 +1,15 @@
+node_modules
+.next
+dist
+.git
+.github
+*.md
+docs
+infra
+.env*
+!.env.example
+.eslintrc*
+.prettierrc
+*.log
+coverage
+.turbo

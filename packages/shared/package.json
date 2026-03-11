@@ -1,0 +1,10 @@
+{
+  "name": "@sercofi/shared",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/index.ts",
+  "scripts": {
+    "type-check": "tsc --noEmit",
+    "lint": "eslint src/ --ext .ts"
+  }
+}

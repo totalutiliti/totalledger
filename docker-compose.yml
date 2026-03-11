@@ -1,0 +1,48 @@
+version: "3.8"
+
+# SercofiRH — Infraestrutura Local
+# Uso: docker-compose up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sercofi-postgres
+    environment:
+      POSTGRES_DB: sercofi_rh
+      POSTGRES_USER: sercofi
+      POSTGRES_PASSWORD: sercofi_dev_123
+    ports:
+      - "5444:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sercofi -d sercofi_rh"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: sercofi-redis
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    container_name: sercofi-azurite
+    ports:
+      - "10010:10000"  # Blob
+      - "10011:10001"  # Queue
+      - "10012:10002"  # Table
+    volumes:
+      - azurite_data:/data
+    command: "azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --skipApiVersionCheck"
+
+volumes:
+  postgres_data:
+  azurite_data:

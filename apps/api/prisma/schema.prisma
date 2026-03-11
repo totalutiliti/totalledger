@@ -1,0 +1,333 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// MULTI-TENANCY
+// ============================================
+
+model Tenant {
+  id        String   @id @default(uuid())
+  nome      String
+  cnpj      String   @unique
+  plano     Plano    @default(STARTER)
+  ativo     Boolean  @default(true)
+  suspenso  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  usuarios     User[]
+  empresas     Empresa[]
+  uploads      Upload[]
+  featureFlags FeatureFlag[]
+
+  @@map("tenants")
+}
+
+enum Plano {
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+// ============================================
+// AUTENTICAÇÃO E AUTORIZAÇÃO
+// ============================================
+
+model User {
+  id                 String    @id @default(uuid())
+  tenantId           String
+  email              String
+  passwordHash       String
+  nome               String
+  role               Role      @default(ANALISTA)
+  ativo              Boolean   @default(true)
+  mustChangePassword Boolean   @default(true)
+  lastLoginAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  createdBy          String?
+  updatedBy          String?
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id])
+  revisoes  Revisao[]
+  auditLogs AuditLog[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  SUPERVISOR
+  ANALISTA
+}
+
+// ============================================
+// EMPRESAS-CLIENTE
+// ============================================
+
+model Empresa {
+  id             String   @id @default(uuid())
+  tenantId       String
+  razaoSocial    String
+  cnpj           String
+  nomeFantasia   String?
+  contato        String?
+  telefone       String?
+  email          String?
+  jornadaSegSex  String?
+  intervaloAlmoco String?
+  jornadaSabado  String?
+  ativo          Boolean  @default(true)
+  deletedAt      DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  createdBy      String?
+  updatedBy      String?
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id])
+  funcionarios Funcionario[]
+  uploads      Upload[]
+
+  @@unique([tenantId, cnpj])
+  @@index([tenantId])
+  @@map("empresas")
+}
+
+// ============================================
+// FUNCIONÁRIOS
+// ============================================
+
+model Funcionario {
+  id        String    @id @default(uuid())
+  tenantId  String
+  empresaId String
+  nome      String
+  cargo     String?
+  cpf       String?
+  matricula String?
+  ativo     Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  empresa      Empresa       @relation(fields: [empresaId], references: [id])
+  cartoesPonto CartaoPonto[]
+
+  @@unique([tenantId, empresaId, cpf])
+  @@index([tenantId])
+  @@index([empresaId])
+  @@map("funcionarios")
+}
+
+// ============================================
+// UPLOAD E PROCESSAMENTO
+// ============================================
+
+model Upload {
+  id            String       @id @default(uuid())
+  tenantId      String
+  empresaId     String
+  userId        String
+  mesReferencia String
+  nomeArquivo   String
+  blobUrl       String
+  blobPath      String
+  tamanhoBytes  Int
+  totalPaginas  Int?
+  status        UploadStatus @default(AGUARDANDO)
+  erroMensagem  String?
+  processadoEm  DateTime?
+  deletedAt     DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id])
+  empresa      Empresa       @relation(fields: [empresaId], references: [id])
+  cartoesPonto CartaoPonto[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([empresaId, mesReferencia])
+  @@map("uploads")
+}
+
+enum UploadStatus {
+  AGUARDANDO
+  PROCESSANDO
+  PROCESSADO
+  ERRO
+  VALIDADO
+  EXPORTADO
+}
+
+// ============================================
+// CARTÃO DE PONTO
+// ============================================
+
+model CartaoPonto {
+  id                String        @id @default(uuid())
+  tenantId          String
+  uploadId          String
+  funcionarioId     String?
+  paginaPdf         Int
+  nomeExtraido      String?
+  cargoExtraido     String?
+  mesExtraido       String?
+  empresaExtraida   String?
+  cnpjExtraido      String?
+  horarioContratual String?
+  tipoCartao        TipoCartao    @default(DESCONHECIDO)
+  statusRevisao     StatusRevisao @default(PENDENTE)
+  confiancaGeral    Float?
+  ocrRawData        Json?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  upload      Upload       @relation(fields: [uploadId], references: [id])
+  funcionario Funcionario? @relation(fields: [funcionarioId], references: [id])
+  batidas     Batida[]
+  revisoes    Revisao[]
+
+  @@index([tenantId])
+  @@index([uploadId])
+  @@index([tenantId, statusRevisao])
+  @@map("cartoes_ponto")
+}
+
+enum TipoCartao {
+  ELETRONICO
+  MANUSCRITO
+  HIBRIDO
+  DESCONHECIDO
+}
+
+enum StatusRevisao {
+  PENDENTE
+  EM_REVISAO
+  APROVADO
+  REJEITADO
+}
+
+// ============================================
+// BATIDAS
+// ============================================
+
+model Batida {
+  id            String  @id @default(uuid())
+  tenantId      String
+  cartaoPontoId String
+  dia           Int
+  diaSemana     String?
+
+  entradaManha String?
+  saidaManha   String?
+  entradaTarde String?
+  saidaTarde   String?
+  entradaExtra String?
+  saidaExtra   String?
+
+  entradaManhaCorrigida String?
+  saidaManhaCorrigida   String?
+  entradaTardeCorrigida String?
+  saidaTardeCorrigida   String?
+  entradaExtraCorrigida String?
+  saidaExtraCorrigida   String?
+
+  horasNormais Float?
+  horasExtras  Float?
+  confianca    Json?
+
+  isManuscrito    Boolean  @default(false)
+  isInconsistente Boolean  @default(false)
+  isFaltaDia      Boolean  @default(false)
+  observacao      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cartaoPonto CartaoPonto @relation(fields: [cartaoPontoId], references: [id], onDelete: Cascade)
+
+  @@unique([cartaoPontoId, dia])
+  @@index([tenantId])
+  @@index([cartaoPontoId])
+  @@map("batidas")
+}
+
+// ============================================
+// REVISÃO E AUDITORIA
+// ============================================
+
+model Revisao {
+  id            String      @id @default(uuid())
+  tenantId      String
+  cartaoPontoId String
+  userId        String
+  acao          AcaoRevisao
+  campo         String?
+  valorAnterior String?
+  valorNovo     String?
+  observacao    String?
+  createdAt     DateTime    @default(now())
+
+  cartaoPonto CartaoPonto @relation(fields: [cartaoPontoId], references: [id])
+  user        User        @relation(fields: [userId], references: [id])
+
+  @@index([tenantId])
+  @@index([cartaoPontoId])
+  @@map("revisoes")
+}
+
+enum AcaoRevisao {
+  CORRECAO
+  APROVACAO
+  REJEICAO
+  OBSERVACAO
+}
+
+// ============================================
+// FEATURE FLAGS
+// ============================================
+
+model FeatureFlag {
+  id        String   @id @default(uuid())
+  tenantId  String
+  feature   String
+  enabled   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, feature])
+  @@index([tenantId])
+  @@map("feature_flags")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  tenantId   String
+  userId     String
+  acao       String
+  entidade   String
+  entidadeId String
+  dados      Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([tenantId])
+  @@index([tenantId, entidade, entidadeId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

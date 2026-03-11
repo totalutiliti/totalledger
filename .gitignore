@@ -1,0 +1,41 @@
+# Dependências
+node_modules/
+.pnpm-store/
+
+# Build
+dist/
+.next/
+*.tsbuildinfo
+.turbo/
+.cache/
+
+# Testes
+coverage/
+
+# Variáveis de ambiente
+*.env
+.env.*
+.env.local
+.env.azure-*
+!.env.example
+
+# Dados Docker locais
+postgres_data/
+azurite_data/
+
+# Logs
+*.log
+pnpm-debug.log*
+
+# Claude Code
+.claude/
+
+# IDEs e editores
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,24 @@
+{
+  "name": "sercofi-rh",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SercofiRH — SaaS multi-tenant para automação de cartões de ponto com OCR + IA",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev:api": "pnpm --filter api run start:dev",
+    "dev:web": "pnpm --filter web run dev",
+    "build": "pnpm -r run build",
+    "lint": "pnpm -r run lint",
+    "test": "pnpm --filter api run test",
+    "type-check": "pnpm -r run type-check",
+    "db:migrate": "pnpm --filter api run prisma:migrate",
+    "db:seed": "pnpm --filter api run prisma:seed",
+    "db:studio": "pnpm --filter api run prisma:studio",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down"
+  }
+}
