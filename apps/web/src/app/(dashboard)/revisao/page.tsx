@@ -1,11 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/hooks/use-auth';
 import { api } from '@/lib/api';
-import type { CartaoPontoRevisao } from '@/lib/types';
+import type { CartaoPontoRevisao, Empresa, Upload } from '@/lib/types';
 import Link from 'next/link';
-import { Eye, RefreshCw } from 'lucide-react';
+import { Eye, RefreshCw, FileText } from 'lucide-react';
 
 const statusConfig: Record<string, { label: string; color: string }> = {
   PENDENTE: { label: 'Pendente', color: 'bg-yellow-100 text-yellow-700' },
@@ -20,19 +21,64 @@ function confidenceBadge(confianca: number) {
   return 'bg-red-100 text-red-700';
 }
 
+function priorityBadge(prioridade: number | null) {
+  if (prioridade === null) return { label: '-', color: 'bg-gray-100 text-gray-500' };
+  if (prioridade >= 50) return { label: 'Alta', color: 'bg-red-100 text-red-700' };
+  if (prioridade >= 20) return { label: 'Média', color: 'bg-amber-100 text-amber-700' };
+  return { label: 'Baixa', color: 'bg-green-100 text-green-700' };
+}
+
 export default function RevisaoPage() {
   const { accessToken } = useAuth();
+  const searchParams = useSearchParams();
+
   const [items, setItems] = useState<CartaoPontoRevisao[]>([]);
+  const [empresas, setEmpresas] = useState<Empresa[]>([]);
+  const [uploads, setUploads] = useState<Upload[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+
+  // Filters — initialize from URL params if present
+  const [filterEmpresaId, setFilterEmpresaId] = useState(searchParams.get('empresaId') ?? '');
+  const [filterUploadId, setFilterUploadId] = useState(searchParams.get('uploadId') ?? '');
+
+  const fetchEmpresas = useCallback(async () => {
+    if (!accessToken) return;
+    try {
+      const response = await api.get<Empresa[]>('/api/v1/empresas', accessToken);
+      setEmpresas(response.data);
+    } catch {
+      // silently fail
+    }
+  }, [accessToken]);
+
+  const fetchUploads = useCallback(async () => {
+    if (!accessToken) return;
+    try {
+      const params = new URLSearchParams({ sort: 'createdAt:desc', status: 'PROCESSADO' });
+      if (filterEmpresaId) params.set('empresaId', filterEmpresaId);
+
+      const response = await api.get<Upload[]>(
+        `/api/v1/uploads?${params.toString()}`,
+        accessToken,
+      );
+      setUploads(response.data);
+    } catch {
+      // silently fail
+    }
+  }, [accessToken, filterEmpresaId]);
 
   const fetchPendentes = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const response = await api.get<CartaoPontoRevisao[]>(
-        '/api/v1/revisao/pendentes',
-        accessToken,
-      );
+      const params = new URLSearchParams();
+      if (filterEmpresaId) params.set('empresaId', filterEmpresaId);
+      if (filterUploadId) params.set('uploadId', filterUploadId);
+
+      const query = params.toString();
+      const url = `/api/v1/revisao/pendentes${query ? `?${query}` : ''}`;
+
+      const response = await api.get<CartaoPontoRevisao[]>(url, accessToken);
       setItems(response.data);
       setError('');
     } catch (err) {
@@ -40,11 +86,31 @@ export default function RevisaoPage() {
     } finally {
       setLoading(false);
     }
-  }, [accessToken]);
+  }, [accessToken, filterEmpresaId, filterUploadId]);
+
+  useEffect(() => {
+    void fetchEmpresas();
+  }, [fetchEmpresas]);
+
+  useEffect(() => {
+    void fetchUploads();
+  }, [fetchUploads]);
 
   useEffect(() => {
     void fetchPendentes();
   }, [fetchPendentes]);
+
+  // When empresa filter changes, reset upload filter if the upload doesn't belong to that empresa
+  useEffect(() => {
+    if (filterEmpresaId && filterUploadId) {
+      const uploadBelongs = uploads.some(
+        (u) => u.id === filterUploadId && u.empresaId === filterEmpresaId,
+      );
+      if (!uploadBelongs) {
+        setFilterUploadId('');
+      }
+    }
+  }, [filterEmpresaId, filterUploadId, uploads]);
 
   if (loading) {
     return (
@@ -56,6 +122,47 @@ export default function RevisaoPage() {
 
   return (
     <div className="space-y-4">
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-3">
+        <select
+          value={filterEmpresaId}
+          onChange={(e) => setFilterEmpresaId(e.target.value)}
+          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        >
+          <option value="">Todas as empresas</option>
+          {empresas.map((emp) => (
+            <option key={emp.id} value={emp.id}>
+              {emp.razaoSocial}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={filterUploadId}
+          onChange={(e) => setFilterUploadId(e.target.value)}
+          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        >
+          <option value="">Todos os arquivos</option>
+          {uploads.map((u) => (
+            <option key={u.id} value={u.id}>
+              {u.nomeArquivo} ({u.mesReferencia})
+            </option>
+          ))}
+        </select>
+
+        {(filterEmpresaId || filterUploadId) && (
+          <button
+            onClick={() => {
+              setFilterEmpresaId('');
+              setFilterUploadId('');
+            }}
+            className="text-sm text-gray-500 hover:text-gray-700 underline"
+          >
+            Limpar filtros
+          </button>
+        )}
+      </div>
+
       <div className="flex items-center justify-between">
         <p className="text-sm text-gray-500">
           {items.length} cartão(ões) pendente(s) de revisão
@@ -82,6 +189,7 @@ export default function RevisaoPage() {
                   Funcionário
                 </th>
                 <th className="px-6 py-3 font-medium text-gray-500">Empresa</th>
+                <th className="px-6 py-3 font-medium text-gray-500">Arquivo</th>
                 <th className="px-6 py-3 font-medium text-gray-500">Mês</th>
                 <th className="px-6 py-3 font-medium text-gray-500">
                   Tipo Cartão
@@ -89,6 +197,7 @@ export default function RevisaoPage() {
                 <th className="px-6 py-3 font-medium text-gray-500">
                   Confiança
                 </th>
+                <th className="px-6 py-3 font-medium text-gray-500">Prioridade</th>
                 <th className="px-6 py-3 font-medium text-gray-500">Status</th>
                 <th className="px-6 py-3 font-medium text-gray-500">Ações</th>
               </tr>
@@ -97,7 +206,7 @@ export default function RevisaoPage() {
               {items.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={9}
                     className="px-6 py-8 text-center text-gray-500"
                   >
                     Nenhum cartão pendente de revisão.
@@ -122,6 +231,25 @@ export default function RevisaoPage() {
                         {item.upload?.empresa?.razaoSocial ?? item.empresaExtraida ?? '-'}
                       </td>
                       <td className="px-6 py-4">
+                        {item.upload ? (
+                          <Link
+                            href="/processamento"
+                            className="flex items-center gap-1 text-gray-600 hover:text-blue-600"
+                            title={`Página ${item.paginaPdf} do PDF`}
+                          >
+                            <FileText size={14} className="text-gray-400" />
+                            <span className="max-w-[150px] truncate">
+                              {item.upload.nomeArquivo}
+                            </span>
+                            <span className="text-xs text-gray-400">
+                              (p.{item.paginaPdf})
+                            </span>
+                          </Link>
+                        ) : (
+                          '-'
+                        )}
+                      </td>
+                      <td className="px-6 py-4">
                         {item.upload?.mesReferencia ?? item.mesExtraido ?? '-'}
                       </td>
                       <td className="px-6 py-4">{item.tipoCartao}</td>
@@ -131,6 +259,19 @@ export default function RevisaoPage() {
                         >
                           {(confianca * 100).toFixed(0)}%
                         </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        {(() => {
+                          const prio = priorityBadge(item.prioridadeRevisao);
+                          return (
+                            <span
+                              className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${prio.color}`}
+                              title={item.prioridadeMotivos?.join(', ') ?? ''}
+                            >
+                              {prio.label}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="px-6 py-4">
                         <span

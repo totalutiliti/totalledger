@@ -143,6 +143,10 @@ model Upload {
   blobPath      String
   tamanhoBytes  Int
   totalPaginas  Int?
+  paginasProcessadas Int?
+  paginasFalhadas    Int?
+  fileHash      String?      @unique
+  version       Int          @default(1)
   status        UploadStatus @default(AGUARDANDO)
   erroMensagem  String?
   processadoEm  DateTime?
@@ -150,9 +154,11 @@ model Upload {
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 
-  tenant       Tenant        @relation(fields: [tenantId], references: [id])
-  empresa      Empresa       @relation(fields: [empresaId], references: [id])
-  cartoesPonto CartaoPonto[]
+  tenant              Tenant               @relation(fields: [tenantId], references: [id])
+  empresa             Empresa              @relation(fields: [empresaId], references: [id])
+  cartoesPonto        CartaoPonto[]
+  pageClassifications PageClassification[]
+  pipelineMetrics     PipelineMetrics?
 
   @@index([tenantId])
   @@index([tenantId, status])
@@ -164,6 +170,7 @@ enum UploadStatus {
   AGUARDANDO
   PROCESSANDO
   PROCESSADO
+  PROCESSADO_PARCIAL
   ERRO
   VALIDADO
   EXPORTADO
@@ -187,19 +194,32 @@ model CartaoPonto {
   horarioContratual String?
   tipoCartao        TipoCartao    @default(DESCONHECIDO)
   statusRevisao     StatusRevisao @default(PENDENTE)
-  confiancaGeral    Float?
-  ocrRawData        Json?
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+  confiancaGeral       Float?
+  skipReason           String?
+  pipelineVersion      Int           @default(1)
+  prioridadeRevisao    Float?
+  prioridadeMotivos    Json?
+  ocrRawData           Json?
 
-  upload      Upload       @relation(fields: [uploadId], references: [id])
-  funcionario Funcionario? @relation(fields: [funcionarioId], references: [id])
-  batidas     Batida[]
-  revisoes    Revisao[]
+  // Campos v2 (agrupamento quinzenal)
+  tipoCartaoFormato    String        @default("mensal")  // 'mensal' | 'quinzenal'
+  paginaVerso          Int?                               // null se mensal
+  mergeValidado        Boolean       @default(true)       // false se houve warning no merge
+
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  upload       Upload        @relation(fields: [uploadId], references: [id])
+  funcionario  Funcionario?  @relation(fields: [funcionarioId], references: [id])
+  batidas      Batida[]
+  revisoes     Revisao[]
+  ocrFeedback  OcrFeedback[]
+  groundTruth  GroundTruth[]
 
   @@index([tenantId])
   @@index([uploadId])
   @@index([tenantId, statusRevisao])
+  @@index([tenantId, statusRevisao, prioridadeRevisao])
   @@map("cartoes_ponto")
 }
 
@@ -208,6 +228,36 @@ enum TipoCartao {
   MANUSCRITO
   HIBRIDO
   DESCONHECIDO
+}
+
+enum PageType {
+  CARTAO_PONTO_MENSAL
+  CARTAO_PONTO_QUINZENAL
+  ESPELHO_PONTO
+  PAGINA_ASSINATURA
+  PAGINA_SEM_TABELA
+  PAGINA_FINANCEIRA
+  DOCUMENTO_DESCONHECIDO
+}
+
+model PageClassification {
+  id             String   @id @default(uuid())
+  tenantId       String
+  uploadId       String
+  paginaPdf      Int
+  pageType       PageType
+  subFormat      String?
+  confidence     Float
+  shouldProcess  Boolean  @default(true)
+  classifierData Json?
+  createdAt      DateTime @default(now())
+
+  upload Upload @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+
+  @@unique([uploadId, paginaPdf])
+  @@index([tenantId])
+  @@index([uploadId])
+  @@map("page_classifications")
 }
 
 enum StatusRevisao {
@@ -251,15 +301,145 @@ model Batida {
   isFaltaDia      Boolean  @default(false)
   observacao      String?
 
+  gptFailed         Boolean @default(false)
+  consistencyIssues Json?
+  outlierFlags      Json?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  cartaoPonto CartaoPonto @relation(fields: [cartaoPontoId], references: [id], onDelete: Cascade)
+  cartaoPonto CartaoPonto  @relation(fields: [cartaoPontoId], references: [id], onDelete: Cascade)
+  ocrFeedback OcrFeedback[]
+  groundTruth GroundTruth[]
 
   @@unique([cartaoPontoId, dia])
   @@index([tenantId])
   @@index([cartaoPontoId])
   @@map("batidas")
+}
+
+// ============================================
+// OCR FEEDBACK (DI vs GPT vs Human)
+// ============================================
+
+model OcrFeedback {
+  id            String   @id @default(uuid())
+  tenantId      String
+  batidaId      String
+  cartaoPontoId String
+  dia           Int
+  campo         String
+  valorDi       String?
+  valorGpt      String?
+  valorFinal    String?
+  valorHumano   String?
+  concordaDiGpt Boolean?
+
+  // Campos v2 (multi-extrator com votacao)
+  valorMiniA    String?
+  valorMiniB    String?
+  valorMiniC    String?
+  fonteDecisao  String?
+  usouFallback  Boolean   @default(false)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  batida      Batida      @relation(fields: [batidaId], references: [id], onDelete: Cascade)
+  cartaoPonto CartaoPonto @relation(fields: [cartaoPontoId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([batidaId])
+  @@index([cartaoPontoId])
+  @@map("ocr_feedback")
+}
+
+// ============================================
+// TENANT OCR CONFIG
+// ============================================
+
+model TenantOcrConfig {
+  id                    String   @id @default(uuid())
+  tenantId              String   @unique
+  timeFieldRanges       Json?
+  minLunchBreakMinutes  Int      @default(60)
+  maxWorkdayMinutes     Int      @default(600)
+  reviewThreshold       Float    @default(0.80)
+  gptSkipThreshold      Float    @default(0.90)
+  outlierZWarning       Float    @default(2.0)
+  outlierZError         Float    @default(3.0)
+  outlierMinDays        Int      @default(5)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([tenantId])
+  @@map("tenant_ocr_configs")
+}
+
+// ============================================
+// PIPELINE METRICS
+// ============================================
+
+model PipelineMetrics {
+  id                   String   @id @default(uuid())
+  tenantId             String
+  uploadId             String   @unique
+  totalPaginas         Int
+  paginasProcessadas   Int
+  paginasFalhadas      Int
+  paginasIgnoradas     Int      @default(0)
+  tempoDocIntel        Int?
+  tempoClassifier      Int?
+  tempoParser          Int?
+  tempoSanitizer       Int?
+  tempoScorer          Int?
+  tempoConsistency     Int?
+  tempoGatekeeper      Int?
+  tempoGptVision       Int?
+  tempoOutlier         Int?
+  tempoOrchestrator    Int?
+  tempoGptMini         Int?
+  tempoGptVision52     Int?
+  tempoImageCropping   Int?
+  tempoTotal           Int
+  totalBatidas         Int      @default(0)
+  batidasRevisao       Int      @default(0)
+  correcoesSanitizer   Int      @default(0)
+  chamadasGpt          Int      @default(0)
+  gptPuladas           Int      @default(0)
+  gptTokensIn          Int      @default(0)
+  gptTokensOut         Int      @default(0)
+  gptCustoDolar        Float?
+  chamadasMini         Int      @default(0)
+  chamadasGpt52        Int      @default(0)
+  gpt52Skipped         Int      @default(0)
+  miniTokensIn         Int      @default(0)
+  miniTokensOut        Int      @default(0)
+  gpt52TokensIn        Int      @default(0)
+  gpt52TokensOut       Int      @default(0)
+  miniCustoDolar       Float?
+  gpt52CustoDolar      Float?
+  concordanciaDiGpt    Float?
+  classificacaoPaginas Json?
+
+  // Campos v2 (multi-extrator com votacao)
+  pipelineVersion           String   @default("v1")
+  paginasResolvidasVotacao  Int      @default(0)
+  paginasFallback52         Int      @default(0)
+  taxaConcordancia3de3      Float?
+  taxaConcordancia2de3      Float?
+  taxaDivergenciaTotal      Float?
+  custoEstimadoMini         Float?
+  custoEstimadoDI           Float?
+  custoEstimado52           Float?
+  custoEstimadoTotal        Float?
+
+  createdAt            DateTime @default(now())
+
+  upload Upload @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("pipeline_metrics")
 }
 
 // ============================================
@@ -291,6 +471,38 @@ enum AcaoRevisao {
   APROVACAO
   REJEICAO
   OBSERVACAO
+}
+
+// ============================================
+// GROUND TRUTH (Dataset de Avaliação)
+// ============================================
+
+model GroundTruth {
+  id              String     @id @default(uuid())
+  tenantId        String
+  cartaoPontoId   String
+  batidaId        String
+  dia             Int
+  campo           String
+  valorDi         String?
+  valorGpt        String?
+  valorSanitizer  String?
+  valorFinal      String?
+  valorHumano     String?
+  acertouDi       Boolean?
+  acertouGpt      Boolean?
+  acertouSanitizer Boolean?
+  tipoCartao      TipoCartao
+  isManuscrito    Boolean    @default(false)
+  createdAt       DateTime   @default(now())
+
+  batida      Batida      @relation(fields: [batidaId], references: [id], onDelete: Cascade)
+  cartaoPonto CartaoPonto @relation(fields: [cartaoPontoId], references: [id], onDelete: Cascade)
+
+  @@unique([batidaId, campo])
+  @@index([tenantId])
+  @@index([cartaoPontoId])
+  @@map("ground_truth")
 }
 
 // ============================================

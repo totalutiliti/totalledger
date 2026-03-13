@@ -29,6 +29,19 @@ const envSchema = z.object({
   AZURE_OPENAI_DEPLOYMENT: z.string().default('gpt-4o-mini'),
   AZURE_OPENAI_API_VERSION: z.string().default('2024-10-01-preview'),
 
+  // Azure OpenAI — OCR Pipeline models
+  AZURE_OPENAI_MINI_DEPLOYMENT: z.string().default('gpt-5-mini'),
+  AZURE_OPENAI_OCR_DEPLOYMENT: z.string().default('gpt-52-chat'),
+  AZURE_OPENAI_OCR_API_VERSION: z.string().default('2025-04-01-preview'),
+
+  // OCR Pipeline — concurrency controls
+  OCR_MINI_CONCURRENCY: z.coerce.number().int().positive().default(8),
+  OCR_GPT52_CONCURRENCY: z.coerce.number().int().positive().default(3),
+  OCR_PAGE_CONCURRENCY: z.coerce.number().int().positive().default(8),
+
+  // Pipeline version: 'v1' (Mini + 5.2 fallback) ou 'v2' (3x Mini + votacao + 5.2 fallback)
+  PIPELINE_VERSION: z.enum(['v1', 'v2']).default('v1'),
+
   // Redis / BullMQ
   REDIS_HOST: z.string().default('localhost'),
   REDIS_PORT: z.coerce.number().int().positive().default(6379),

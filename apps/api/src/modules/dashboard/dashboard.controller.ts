@@ -22,6 +22,17 @@ export class DashboardController {
     return { data };
   }
 
+  @Get('usage-metrics')
+  @Roles(Role.SUPER_ADMIN)
+  async getUsageMetrics(
+    @Query('de') de?: string,
+    @Query('ate') ate?: string,
+    @Query('tenantId') tenantId?: string,
+  ) {
+    const data = await this.dashboardService.getUsageMetrics(de, ate, tenantId);
+    return { data };
+  }
+
   @Get('resumo')
   @Roles(Role.ADMIN, Role.SUPERVISOR, Role.ANALISTA)
   async getResumo(@CurrentTenant() tenantId: string) {
