@@ -129,6 +129,57 @@ const TimeInput = forwardRef<HTMLInputElement, TimeInputProps>(
         let targetCol = col;
         let shouldNavigate = false;
 
+        /**
+         * Encontra o proximo input navegavel na direcao horizontal.
+         * Pula celulas vazias de hora extra e vai para a primeira
+         * celula preenchida (ou col 0) da proxima linha.
+         */
+        const findNextHorizontal = (
+          fromRow: number,
+          fromCol: number,
+          direction: 1 | -1,
+        ): HTMLInputElement | null => {
+          let r = fromRow;
+          let c = fromCol + direction;
+
+          // Tentar na mesma linha primeiro
+          while (c >= 0 && c <= 5) {
+            const candidate = table.querySelector<HTMLInputElement>(
+              `input[data-row="${r}"][data-col="${c}"]`,
+            );
+            if (candidate) {
+              // Se o campo tem valor OU estamos voltando (esquerda), navega
+              if (direction === -1 || candidate.value.trim() !== '') {
+                return candidate;
+              }
+              // Campo vazio na direcao direita: pular para proxima linha
+              break;
+            }
+            c += direction;
+          }
+
+          // Nao achou na mesma linha — ir para outra linha
+          if (direction === 1) {
+            // Proxima linha, primeira coluna (col 0)
+            return table.querySelector<HTMLInputElement>(
+              `input[data-row="${r + 1}"][data-col="0"]`,
+            );
+          } else {
+            // Linha anterior, ultima celula preenchida
+            const prevRow = r - 1;
+            for (let cc = 5; cc >= 0; cc--) {
+              const candidate = table.querySelector<HTMLInputElement>(
+                `input[data-row="${prevRow}"][data-col="${cc}"]`,
+              );
+              if (candidate && candidate.value.trim() !== '') return candidate;
+            }
+            // Fallback: col 3 (saidaTarde) da linha anterior
+            return table.querySelector<HTMLInputElement>(
+              `input[data-row="${prevRow}"][data-col="3"]`,
+            );
+          }
+        };
+
         switch (e.key) {
           case 'ArrowUp':
             targetRow = row - 1;
@@ -145,30 +196,48 @@ const TimeInput = forwardRef<HTMLInputElement, TimeInputProps>(
           case 'ArrowLeft':
             // Navega para a esquerda so se o cursor esta no inicio
             if (input.selectionStart === 0 && input.selectionEnd === 0) {
-              targetCol = col - 1;
-              shouldNavigate = true;
+              const prev = findNextHorizontal(row, col, -1);
+              if (prev) {
+                prev.focus();
+                requestAnimationFrame(() => prev.select());
+              }
               e.preventDefault();
+              return;
             }
             break;
 
           case 'ArrowRight':
             // Navega para a direita so se o cursor esta no fim
             if (input.selectionStart === input.value.length) {
-              targetCol = col + 1;
-              shouldNavigate = true;
+              const next = findNextHorizontal(row, col, 1);
+              if (next) {
+                next.focus();
+                requestAnimationFrame(() => next.select());
+              }
               e.preventDefault();
+              return;
             }
             break;
 
-          case 'Enter':
-          case 'Tab':
-            // Tab ja navega nativamente; Enter vai para baixo
-            if (e.key === 'Enter') {
-              targetRow = row + 1;
-              shouldNavigate = true;
+          case 'Tab': {
+            // Tab: mesma logica — pula campos vazios de extra
+            const next = findNextHorizontal(row, col, e.shiftKey ? -1 : 1);
+            if (next) {
+              next.focus();
+              requestAnimationFrame(() => next.select());
               e.preventDefault();
+              return;
             }
             break;
+          }
+
+          case 'Enter': {
+            // Enter: proxima linha, mesma coluna
+            targetRow = row + 1;
+            shouldNavigate = true;
+            e.preventDefault();
+            break;
+          }
 
           default:
             break;

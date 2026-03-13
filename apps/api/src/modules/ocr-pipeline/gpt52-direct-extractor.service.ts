@@ -138,6 +138,11 @@ export class Gpt52DirectExtractorService {
 
           const result = this.parseResponse(content, tipoCartao);
 
+          // Attach token usage to result for metrics tracking
+          result.tokensIn = tokensIn;
+          result.tokensOut = tokensOut;
+          result.latencyMs = latencyMs;
+
           this.logger.log('GPT-5.2 Direct extraction completed', {
             attempt: attempt + 1,
             dias: result.dias.length,

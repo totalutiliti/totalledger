@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/use-auth';
 import { api } from '@/lib/api';
 import type { CartaoPontoRevisao, Batida, OcrFeedbackItem, ConsistencyIssue, OutlierFlag } from '@/lib/types';
-import { ArrowLeft, Check, X, Crosshair } from 'lucide-react';
+import { ArrowLeft, Check, X, Crosshair, Save, ChevronsDown, ArrowDownFromLine, ArrowUpFromLine } from 'lucide-react';
 import Link from 'next/link';
 import TimeInput from '@/components/ui/time-input';
 
@@ -88,6 +88,16 @@ const TIME_FIELDS = [
 
 type TimeField = typeof TIME_FIELDS[number];
 
+/** Maps display field name to the backend corrected field name for PATCH calls */
+const CORRECTED_FIELD_MAP: Record<TimeField, string> = {
+  entradaManha: 'entradaManhaCorrigida',
+  saidaManha: 'saidaManhaCorrigida',
+  entradaTarde: 'entradaTardeCorrigida',
+  saidaTarde: 'saidaTardeCorrigida',
+  entradaExtra: 'entradaExtraCorrigida',
+  saidaExtra: 'saidaExtraCorrigida',
+};
+
 interface BatidaEdit {
   id: string;
   dia: number;
@@ -122,13 +132,26 @@ export default function RevisaoDetailPage() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [pdfError, setPdfError] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  /** Snapshot of original values loaded from server — used to detect changes */
+  const originalBatidasRef = useRef<Map<string, Record<TimeField, string>>>(new Map());
+  /** Track last focused table cell so shift buttons work after focus moves to button */
+  const lastFocusedCellRef = useRef<{ row: number; col: string }>({ row: 0, col: '0' });
 
   /** Sincroniza o PDF na página do cartão atual */
   const syncPdfToCurrentPage = useCallback(() => {
-    if (iframeRef.current && pdfUrl && cartao?.paginaPdf) {
-      iframeRef.current.src = `${pdfUrl}#page=${cartao.paginaPdf}`;
-    }
+    const page = cartao?.paginaPdf;
+    if (!iframeRef.current || !pdfUrl || page == null) return;
+
+    // Force reload: briefly clear src then restore after browser processes the clear
+    const target = `${pdfUrl}#page=${page}`;
+    iframeRef.current.src = 'about:blank';
+    setTimeout(() => {
+      if (iframeRef.current) {
+        iframeRef.current.src = target;
+      }
+    }, 50);
   }, [pdfUrl, cartao?.paginaPdf]);
 
   const fetchCartao = useCallback(async () => {
@@ -140,17 +163,26 @@ export default function RevisaoDetailPage() {
       );
       const data = response.data;
       setCartao(data);
-      setBatidas(
-        (data.batidas ?? []).map((b: Batida) => ({
+
+      // Build snapshot of original values and map batidas for editing
+      const snapshot = new Map<string, Record<TimeField, string>>();
+      const editBatidas = (data.batidas ?? []).map((b: Batida) => {
+        // Use corrected value if exists, otherwise original OCR value
+        const values: Record<TimeField, string> = {
+          entradaManha: b.entradaManhaCorrigida ?? b.entradaManha ?? '',
+          saidaManha: b.saidaManhaCorrigida ?? b.saidaManha ?? '',
+          entradaTarde: b.entradaTardeCorrigida ?? b.entradaTarde ?? '',
+          saidaTarde: b.saidaTardeCorrigida ?? b.saidaTarde ?? '',
+          entradaExtra: b.entradaExtraCorrigida ?? b.entradaExtra ?? '',
+          saidaExtra: b.saidaExtraCorrigida ?? b.saidaExtra ?? '',
+        };
+        snapshot.set(b.id, { ...values });
+
+        return {
           id: b.id,
           dia: b.dia,
           diaSemana: b.diaSemana ?? '',
-          entradaManha: b.entradaManha ?? '',
-          saidaManha: b.saidaManha ?? '',
-          entradaTarde: b.entradaTarde ?? '',
-          saidaTarde: b.saidaTarde ?? '',
-          entradaExtra: b.entradaExtra ?? '',
-          saidaExtra: b.saidaExtra ?? '',
+          ...values,
           confianca: b.confianca,
           overallConfianca: getOverallConfidence(b.confianca),
           isManuscrito: b.isManuscrito,
@@ -160,8 +192,11 @@ export default function RevisaoDetailPage() {
           consistencyIssues: b.consistencyIssues,
           outlierFlags: b.outlierFlags,
           ocrFeedback: b.ocrFeedback,
-        })),
-      );
+        };
+      });
+
+      originalBatidasRef.current = snapshot;
+      setBatidas(editBatidas);
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao carregar cartão');
@@ -190,7 +225,7 @@ export default function RevisaoDetailPage() {
         const url = URL.createObjectURL(blob);
         setPdfUrl(url);
       } catch {
-        // PDF não disponível — mantém placeholder
+        setPdfError(true);
       }
     };
 
@@ -212,6 +247,160 @@ export default function RevisaoDetailPage() {
     );
   };
 
+  /** Count how many fields were changed by the reviewer */
+  /**
+   * Pula o foco para a segunda metade da tabela (dia 16+) ou para o fim.
+   * Encontra o input atualmente focado e avanca ~15 linhas.
+   */
+  const handleSkipBlock = useCallback(() => {
+    const table = document.querySelector('table');
+    if (!table) return;
+
+    const { row: currentRow, col: currentColStr } = lastFocusedCellRef.current;
+    const currentCol = Number(currentColStr);
+
+    // Pula metade das batidas (quinzena) ou para o final
+    const halfRows = Math.ceil(batidas.length / 2);
+    const targetRow = currentRow + halfRows;
+
+    // Tentar focar na mesma coluna da linha alvo
+    const target = table.querySelector<HTMLInputElement>(
+      `input[data-row="${targetRow}"][data-col="${currentCol}"]`,
+    );
+    if (target) {
+      target.focus();
+      requestAnimationFrame(() => target.select());
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    } else {
+      // Se não existe a linha, foca no último input da tabela
+      const allInputs = table.querySelectorAll<HTMLInputElement>('input[data-row]');
+      const lastInput = allInputs[allInputs.length - 1];
+      if (lastInput) {
+        lastInput.focus();
+        requestAnimationFrame(() => lastInput.select());
+        lastInput.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
+    }
+  }, [batidas.length]);
+
+  /** Metadata fields that move together with time data during shift */
+  const META_FIELDS = [
+    'confianca',
+    'overallConfianca',
+    'isManuscrito',
+    'isInconsistente',
+    'isFaltaDia',
+    'gptFailed',
+    'consistencyIssues',
+    'outlierFlags',
+    'ocrFeedback',
+  ] as const;
+
+  /** Clear all data fields of a row (time + metadata) */
+  const clearRowData = (row: BatidaEdit): void => {
+    for (const field of TIME_FIELDS) {
+      row[field] = '';
+    }
+    row.confianca = null;
+    row.overallConfianca = 0;
+    row.isManuscrito = false;
+    row.isInconsistente = false;
+    row.isFaltaDia = false;
+    row.gptFailed = undefined;
+    row.consistencyIssues = null;
+    row.outlierFlags = null;
+    row.ocrFeedback = undefined;
+  };
+
+  /** Copy time + metadata from src row to dst row */
+  const copyRowData = (dst: BatidaEdit, src: BatidaEdit): void => {
+    for (const field of TIME_FIELDS) {
+      dst[field] = src[field];
+    }
+    for (const meta of META_FIELDS) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (dst as Record<string, any>)[meta] = (src as Record<string, any>)[meta];
+    }
+  };
+
+  /** Re-focus a cell after state update */
+  const refocusCell = (row: number, col: string): void => {
+    const table = document.querySelector('table');
+    if (!table) return;
+    requestAnimationFrame(() => {
+      const target = table.querySelector<HTMLInputElement>(
+        `input[data-row="${row}"][data-col="${col}"]`,
+      );
+      if (target) {
+        target.focus();
+        target.select();
+      }
+    });
+  };
+
+  /**
+   * Desloca os dados uma linha para baixo a partir da posição do cursor.
+   * A linha atual fica em branco; a última linha perde os dados.
+   */
+  const handleShiftDown = useCallback(() => {
+    const { row: currentRow, col } = lastFocusedCellRef.current;
+
+    setBatidas((prev) => {
+      if (currentRow >= prev.length - 1) return prev;
+      const updated = prev.map((b) => ({ ...b }));
+      for (let i = updated.length - 1; i > currentRow; i--) {
+        copyRowData(updated[i], updated[i - 1]);
+      }
+      clearRowData(updated[currentRow]);
+      return updated;
+    });
+
+    refocusCell(currentRow, col);
+  }, []);
+
+  /**
+   * Desloca os dados uma linha para cima a partir da posição do cursor.
+   * A linha do cursor recebe os dados de cima; a primeira linha perde os dados.
+   */
+  const handleShiftUp = useCallback(() => {
+    const { row: currentRow, col } = lastFocusedCellRef.current;
+    if (currentRow <= 0) return;
+
+    setBatidas((prev) => {
+      const updated = prev.map((b) => ({ ...b }));
+      // Shift from row 0 upward: each row gets the data from the next row
+      for (let i = 0; i < currentRow; i++) {
+        copyRowData(updated[i], updated[i + 1]);
+      }
+      clearRowData(updated[currentRow]);
+      return updated;
+    });
+
+    refocusCell(currentRow, col);
+  }, []);
+
+  const countChanges = useCallback((): number => {
+    let count = 0;
+    for (const batida of batidas) {
+      const original = originalBatidasRef.current.get(batida.id);
+      if (!original) continue;
+      for (const field of TIME_FIELDS) {
+        if (batida[field] !== original[field]) count++;
+      }
+    }
+    return count;
+  }, [batidas]);
+
+  /** Check if a specific field was changed */
+  const isFieldChanged = (batidaId: string, field: TimeField): boolean => {
+    const original = originalBatidasRef.current.get(batidaId);
+    if (!original) return false;
+    const currentBatida = batidas.find((b) => b.id === batidaId);
+    if (!currentBatida) return false;
+    return currentBatida[field] !== original[field];
+  };
+
+  /** Send all corrections to backend, then perform action */
   const handleAction = async (action: 'aprovar' | 'rejeitar') => {
     if (!accessToken || !id) return;
     setSaving(true);
@@ -219,7 +408,37 @@ export default function RevisaoDetailPage() {
     setSuccess('');
 
     try {
+      // Before approving, save any corrections the reviewer made
       if (action === 'aprovar') {
+        const patchPromises: Promise<unknown>[] = [];
+
+        for (const batida of batidas) {
+          const original = originalBatidasRef.current.get(batida.id);
+          if (!original) continue;
+
+          const changedFields: Record<string, string> = {};
+          for (const field of TIME_FIELDS) {
+            if (batida[field] !== original[field]) {
+              changedFields[CORRECTED_FIELD_MAP[field]] = batida[field];
+            }
+          }
+
+          if (Object.keys(changedFields).length > 0) {
+            patchPromises.push(
+              api.patch(
+                `/api/v1/revisao/${id}/batidas/${batida.id}`,
+                changedFields,
+                accessToken,
+              ),
+            );
+          }
+        }
+
+        // Send all corrections in parallel (each targets a different batidaId)
+        if (patchPromises.length > 0) {
+          await Promise.all(patchPromises);
+        }
+
         await api.post(`/api/v1/revisao/${id}/aprovar`, {}, accessToken);
       } else {
         await api.post(
@@ -229,9 +448,10 @@ export default function RevisaoDetailPage() {
         );
       }
 
+      const changeCount = countChanges();
       setSuccess(
         action === 'aprovar'
-          ? 'Cartão aprovado! Carregando próximo...'
+          ? `Cartão aprovado${changeCount > 0 ? ` (${changeCount} correções salvas)` : ''}! Carregando próximo...`
           : 'Cartão rejeitado. Carregando próximo...',
       );
 
@@ -354,7 +574,17 @@ export default function RevisaoDetailPage() {
           ) : (
             <div className="flex min-h-0 flex-1 items-center justify-center rounded-b-xl border-2 border-dashed border-gray-300 bg-gray-50">
               <div className="text-center text-gray-400">
-                {cartao.upload?.id ? (
+                {pdfError ? (
+                  <>
+                    <p className="text-lg font-medium text-red-500">Erro ao carregar PDF</p>
+                    <p className="mt-1 text-sm">
+                      O arquivo pode ter sido removido do storage.
+                    </p>
+                    <p className="mt-1 text-xs">
+                      Tente reprocessar o upload.
+                    </p>
+                  </>
+                ) : cartao.upload?.id ? (
                   <>
                     <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-blue-200 border-t-blue-600 mx-auto" />
                     <p className="text-sm">Carregando PDF...</p>
@@ -386,7 +616,18 @@ export default function RevisaoDetailPage() {
 
           {/* Table - scrollable, fills remaining space */}
           <div className="min-h-0 flex-1 overflow-y-auto">
-            <table className="w-full text-xs">
+            <table
+              className="w-full text-xs"
+              onFocusCapture={(e) => {
+                const target = e.target as HTMLInputElement;
+                if (target.dataset?.row != null) {
+                  lastFocusedCellRef.current = {
+                    row: Number(target.dataset.row),
+                    col: target.dataset.col ?? '0',
+                  };
+                }
+              }}
+            >
               <thead className="sticky top-0 z-10 bg-white">
                 <tr className="border-b border-gray-200 text-left">
                   <th className="px-2 py-2 font-medium text-gray-500">Dia</th>
@@ -435,6 +676,7 @@ export default function RevisaoDetailPage() {
                       const fieldConf = batida.confianca?.[field] ?? 0;
                       const feedback = getFeedback(batida, field);
                       const disagreement = hasDiGptDisagreement(batida, field);
+                      const changed = isFieldChanged(batida.id, field);
                       const tooltip = buildTooltip(
                         field,
                         fieldConf,
@@ -457,7 +699,7 @@ export default function RevisaoDetailPage() {
                               title={tooltip}
                               data-row={rowIndex}
                               data-col={colIndex}
-                              className={`w-14 rounded border px-1.5 py-1 text-xs focus:border-blue-500 focus:outline-none ${cellConfidenceBorder(fieldConf)}`}
+                              className={`w-14 rounded border px-1.5 py-1 text-xs focus:border-blue-500 focus:outline-none ${cellConfidenceBorder(fieldConf)} ${changed ? 'border-l-2 border-l-blue-500 bg-blue-50' : ''}`}
                             />
                             {disagreement && (
                               <span
@@ -512,7 +754,17 @@ export default function RevisaoDetailPage() {
               <span className="flex items-center gap-1">
                 <span className="text-amber-500">⚡</span> DI ≠ GPT
               </span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block h-3 w-3 rounded border-l-2 border-l-blue-500 bg-blue-50" />
+                Corrigido
+              </span>
             </div>
+            {countChanges() > 0 && (
+              <div className="mt-2 flex items-center gap-1.5 text-xs font-medium text-blue-700">
+                <Save size={12} />
+                {countChanges()} correção(ões) será(ão) salva(s) ao aprovar
+              </div>
+            )}
             <div className="mt-3 flex gap-3">
               <button
                 onClick={() => void handleAction('aprovar')}
@@ -529,6 +781,30 @@ export default function RevisaoDetailPage() {
               >
                 <X size={16} />
                 Rejeitar
+              </button>
+              <button
+                onClick={handleSkipBlock}
+                className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                title="Pular para a segunda metade do cartão (atalho: avança ~15 dias)"
+              >
+                <ChevronsDown size={16} />
+                Pular Quinzena
+              </button>
+              <button
+                onClick={handleShiftUp}
+                className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                title="Deslocar dados uma linha para cima a partir da célula selecionada"
+              >
+                <ArrowUpFromLine size={16} />
+                Deslocar ↑
+              </button>
+              <button
+                onClick={handleShiftDown}
+                className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                title="Deslocar dados uma linha para baixo a partir da célula selecionada"
+              >
+                <ArrowDownFromLine size={16} />
+                Deslocar ↓
               </button>
             </div>
           </div>

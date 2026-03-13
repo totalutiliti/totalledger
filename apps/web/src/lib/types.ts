@@ -224,6 +224,12 @@ export interface Batida {
   saidaTarde: string | null;
   entradaExtra: string | null;
   saidaExtra: string | null;
+  entradaManhaCorrigida: string | null;
+  saidaManhaCorrigida: string | null;
+  entradaTardeCorrigida: string | null;
+  saidaTardeCorrigida: string | null;
+  entradaExtraCorrigida: string | null;
+  saidaExtraCorrigida: string | null;
   confianca: Record<string, number> | null;
   isManuscrito: boolean;
   isInconsistente: boolean;
@@ -232,4 +238,28 @@ export interface Batida {
   consistencyIssues?: ConsistencyIssue[] | null;
   outlierFlags?: OutlierFlag[] | null;
   ocrFeedback?: OcrFeedbackItem[];
+}
+
+export interface OcrAccuracy {
+  totalGroundTruthRecords: number;
+  globalAccuracy: { di: number; gpt: number; sanitizer: number };
+  byField: Array<{ campo: string; total: number; acuraciaDi: number; acuraciaGpt: number }>;
+  byTipoCartao: Record<string, { di: number; gpt: number; total: number }>;
+  totalCorrections: number;
+  correctionsByUser: Array<{ userId: string; nome: string; email: string; count: number }>;
+}
+
+export interface CorrectionRecord {
+  id: string;
+  campo: string;
+  valorAnterior: string | null;
+  valorNovo: string | null;
+  createdAt: string;
+  user: { nome: string; email: string };
+  cartaoPonto: {
+    id: string;
+    paginaPdf: number;
+    nomeExtraido: string | null;
+    upload: { id: string; nomeArquivo: string };
+  };
 }

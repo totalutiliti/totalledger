@@ -33,6 +33,27 @@ export class DashboardController {
     return { data };
   }
 
+  @Get('ocr-accuracy')
+  @Roles(Role.SUPER_ADMIN)
+  async getOcrAccuracy(
+    @Query('de') de?: string,
+    @Query('ate') ate?: string,
+  ) {
+    const data = await this.dashboardService.getOcrAccuracy(de, ate);
+    return { data };
+  }
+
+  @Get('corrections')
+  @Roles(Role.SUPER_ADMIN)
+  async getCorrections(
+    @Query(new ZodValidationPipe(paginationSchema)) query: PaginationDto,
+    @Query('de') de?: string,
+    @Query('ate') ate?: string,
+    @Query('userId') userId?: string,
+  ) {
+    return this.dashboardService.getCorrections({ ...query, de, ate, userId });
+  }
+
   @Get('resumo')
   @Roles(Role.ADMIN, Role.SUPERVISOR, Role.ANALISTA)
   async getResumo(@CurrentTenant() tenantId: string) {

@@ -1090,11 +1090,16 @@ export class PageProcessor extends WorkerHost {
       },
     });
 
+    // Update GPT-5.2 metrics atomically
+    await this.updateGpt52Metrics(uploadId, result);
+
     this.logger.log(`[Page:${pageNumber}] Pipeline v3 concluido`, {
       cartaoPontoId: cartaoPonto.id,
       confiancaGeral: result.confiancaGeral,
       batidasCount: result.batidas.length,
       tipoCartao: tipoCartaoEnum,
+      gpt52TokensIn: result.gpt52TokensIn,
+      gpt52TokensOut: result.gpt52TokensOut,
     });
 
     return {
@@ -1208,10 +1213,16 @@ export class PageProcessor extends WorkerHost {
       },
     });
 
+    // Update GPT-5.2 metrics atomically
+    await this.updateGpt52Metrics(uploadId, result);
+
     this.logger.log(`[Card:${cartaoId}] Quinzenal v3 merge concluido`, {
       cartaoPontoId: cartaoPonto.id,
       confiancaGeral: result.confiancaGeral,
       batidasCount: result.batidas.length,
+      gpt52TokensIn: result.gpt52TokensIn,
+      gpt52TokensOut: result.gpt52TokensOut,
+      gpt52Chamadas: result.gpt52Chamadas,
     });
 
     return {
@@ -1220,6 +1231,48 @@ export class PageProcessor extends WorkerHost {
       cartaoPontoId: cartaoPonto.id,
       usedFallback: false,
     };
+  }
+
+  /**
+   * Atomically increment GPT-5.2 metrics in PipelineMetrics.
+   * Called from page processors after each GPT-5.2 call completes.
+   */
+  private async updateGpt52Metrics(
+    uploadId: string,
+    result: import('../ocr-pipeline.types').ProcessamentoV2Result,
+  ): Promise<void> {
+    const chamadas = result.gpt52Chamadas ?? 0;
+    const tokensIn = result.gpt52TokensIn ?? 0;
+    const tokensOut = result.gpt52TokensOut ?? 0;
+
+    if (chamadas === 0 && tokensIn === 0) return;
+
+    // GPT-5.2 pricing: ~$2.50/1M input, $10/1M output
+    const custoDelta = (tokensIn * 2.5 + tokensOut * 10) / 1_000_000;
+
+    try {
+      // First ensure gpt52CustoDolar is not null (Prisma increment fails on null)
+      await this.prisma.pipelineMetrics.updateMany({
+        where: { uploadId, gpt52CustoDolar: null },
+        data: { gpt52CustoDolar: 0 },
+      });
+
+      await this.prisma.pipelineMetrics.update({
+        where: { uploadId },
+        data: {
+          chamadasGpt52: { increment: chamadas },
+          gpt52TokensIn: { increment: tokensIn },
+          gpt52TokensOut: { increment: tokensOut },
+          gpt52CustoDolar: { increment: custoDelta },
+        },
+      });
+    } catch (error: unknown) {
+      // PipelineMetrics may not exist yet if initial save hasn't happened
+      const message = error instanceof Error ? error.message : 'Unknown';
+      this.logger.warn(
+        `[Metrics] Failed to update GPT-5.2 metrics for upload ${uploadId}: ${message}`,
+      );
+    }
   }
 
   private computePrioridadeV2(

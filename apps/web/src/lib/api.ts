@@ -35,10 +35,17 @@ async function apiFetch<T>(path: string, options?: ApiFetchOptions): Promise<T> 
   const res = await fetch(`${API_BASE}${path}`, { ...fetchOptions, headers });
 
   if (!res.ok) {
-    const error: ApiError | { message: string } = await res.json().catch(() => ({
+    const error = await res.json().catch(() => ({
       message: res.statusText,
-    }));
-    throw new Error('message' in error ? error.message : 'Erro na requisição');
+    })) as ApiError & { errors?: Array<{ field: string; message: string }> };
+
+    // Include field-level validation errors in the message
+    let msg = 'message' in error ? error.message : 'Erro na requisição';
+    if (error.errors && error.errors.length > 0) {
+      const details = error.errors.map((e) => `${e.field}: ${e.message}`).join('; ');
+      msg = details;
+    }
+    throw new Error(msg);
   }
 
   return res.json() as Promise<T>;
@@ -85,12 +92,16 @@ async function apiFetchBlob(
   const res = await fetch(`${API_BASE}${path}`, { ...fetchOptions, headers });
 
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ message: res.statusText }));
-    throw new Error(
-      'message' in (error as Record<string, unknown>)
-        ? (error as { message: string }).message
-        : 'Erro na requisição',
-    );
+    const error = await res.json().catch(() => ({
+      message: res.statusText,
+    })) as ApiError & { errors?: Array<{ field: string; message: string }> };
+
+    let msg = 'message' in error ? error.message : 'Erro na requisição';
+    if (error.errors && error.errors.length > 0) {
+      const details = error.errors.map((e) => `${e.field}: ${e.message}`).join('; ');
+      msg = details;
+    }
+    throw new Error(msg);
   }
 
   return res.blob();

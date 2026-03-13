@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const createFuncionarioSchema = z.object({
-  empresaId: z.string().uuid('empresaId deve ser um UUID válido'),
+  empresaId: z.string().min(1, 'empresaId é obrigatório'),
   nome: z.string().min(2).max(200),
   cargo: z.string().max(100).optional(),
   cpf: z.string().regex(/^\d{11}$/, 'CPF deve ter 11 dígitos').optional(),
