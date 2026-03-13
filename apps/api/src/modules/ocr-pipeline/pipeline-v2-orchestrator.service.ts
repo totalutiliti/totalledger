@@ -136,6 +136,9 @@ export class PipelineV2OrchestratorService {
         concordancia2de3: 0,
         divergenciaTotal: 0,
       },
+      gpt52TokensIn: extracao.tokensIn ?? 0,
+      gpt52TokensOut: extracao.tokensOut ?? 0,
+      gpt52Chamadas: 1,
     };
   }
 
@@ -233,6 +236,9 @@ export class PipelineV2OrchestratorService {
         concordancia2de3: 0,
         divergenciaTotal: 0,
       },
+      gpt52TokensIn: (frente.gpt52TokensIn ?? 0) + (verso.gpt52TokensIn ?? 0),
+      gpt52TokensOut: (frente.gpt52TokensOut ?? 0) + (verso.gpt52TokensOut ?? 0),
+      gpt52Chamadas: (frente.gpt52Chamadas ?? 0) + (verso.gpt52Chamadas ?? 0),
     };
   }
 

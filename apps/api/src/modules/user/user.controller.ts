@@ -10,7 +10,6 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
-  UsePipes,
 } from '@nestjs/common';
 import { ApiBearerAuth } from '@nestjs/swagger';
 import { UserService, UserQueryDto } from './user.service';
@@ -56,10 +55,9 @@ export class UserController {
   }
 
   @Post()
-  @UsePipes(new ZodValidationPipe(createUserSchema))
   async create(
     @CurrentUser('sub') userId: string,
-    @Body() dto: CreateUserDto,
+    @Body(new ZodValidationPipe(createUserSchema)) dto: CreateUserDto,
   ) {
     return this.userService.create(dto, userId);
   }

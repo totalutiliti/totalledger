@@ -16,6 +16,7 @@ interface ErrorResponseBody {
   timestamp: string;
   path: string;
   requestId: string;
+  errors?: Array<{ field: string; message: string }>;
 }
 
 @Catch()
@@ -33,6 +34,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     let statusCode: number;
     let message: string;
     let error: string;
+    let errors: Array<{ field: string; message: string }> | undefined;
 
     if (exception instanceof HttpException) {
       statusCode = exception.getStatus();
@@ -48,6 +50,11 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         message = Array.isArray(resp.message)
           ? resp.message.join(', ')
           : String(resp.message ?? exception.message);
+
+        // Forward field-level validation errors from ZodValidationPipe
+        if (Array.isArray(resp.errors)) {
+          errors = resp.errors as Array<{ field: string; message: string }>;
+        }
       } else {
         message = exception.message;
       }
@@ -87,6 +94,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       timestamp: new Date().toISOString(),
       path: request.url,
       requestId,
+      ...(errors ? { errors } : {}),
     };
 
     response.status(statusCode).json(body);

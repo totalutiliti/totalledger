@@ -254,6 +254,10 @@ export interface ExtracaoEstruturada {
   dias: DiaExtracao[];
   confianca: number;
   tipo: 'mensal' | 'quinzenal_1' | 'quinzenal_2';
+  /** Token usage from GPT-5.2 (populated in pipeline v3) */
+  tokensIn?: number;
+  tokensOut?: number;
+  latencyMs?: number;
 }
 
 export interface CabecalhoExtracao {
@@ -393,6 +397,10 @@ export interface ProcessamentoV2Result {
   confiancaGeral: number;
   usou5_2: boolean;
   estatisticas: EstatisticasVotacao;
+  /** GPT-5.2 token usage (pipeline v3) */
+  gpt52TokensIn?: number;
+  gpt52TokensOut?: number;
+  gpt52Chamadas?: number;
 }
 
 export interface V2OcrFeedbackData {

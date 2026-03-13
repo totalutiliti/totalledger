@@ -28,7 +28,7 @@ export class ExportController {
   constructor(private readonly exportService: ExportService) {}
 
   @Post('csv')
-  @Roles(Role.ADMIN, Role.SUPERVISOR)
+  @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.SUPERVISOR)
   @HttpCode(HttpStatus.OK)
   async exportCsv(
     @CurrentTenant() tenantId: string,
@@ -48,7 +48,7 @@ export class ExportController {
   }
 
   @Post('xlsx')
-  @Roles(Role.ADMIN, Role.SUPERVISOR)
+  @Roles(Role.SUPER_ADMIN, Role.ADMIN, Role.SUPERVISOR)
   @HttpCode(HttpStatus.OK)
   async exportXlsx(
     @CurrentTenant() tenantId: string,

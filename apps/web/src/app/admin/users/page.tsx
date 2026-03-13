@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { useAuthContext } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import type { AdminUser, Tenant } from '@/lib/types';
-import { Plus, Pencil, X } from 'lucide-react';
+import { Plus, Pencil, X, Eye, EyeOff } from 'lucide-react';
 
 interface UserCreateForm {
   tenantId: string;
@@ -51,6 +51,7 @@ export default function UsersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [createForm, setCreateForm] = useState<UserCreateForm>(emptyCreateForm);
@@ -438,16 +439,29 @@ export default function UsersPage() {
                 >
                   Senha *
                 </label>
-                <input
-                  id="userPassword"
-                  type="password"
-                  required
-                  value={createForm.password}
-                  onChange={(e) =>
-                    setCreateForm((f) => ({ ...f, password: e.target.value }))
-                  }
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                />
+                <div className="relative">
+                  <input
+                    id="userPassword"
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    value={createForm.password}
+                    onChange={(e) =>
+                      setCreateForm((f) => ({ ...f, password: e.target.value }))
+                    }
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 pr-10 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    tabIndex={-1}
+                  >
+                    {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+                <p className="mt-1 text-xs text-gray-400">
+                  Min. 8 caracteres: maiúscula, minúscula, dígito e especial (@$!%*?&amp;)
+                </p>
               </div>
 
               <div className="flex justify-end gap-3 pt-2">

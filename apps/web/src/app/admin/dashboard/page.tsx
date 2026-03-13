@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useAuthContext } from '@/lib/auth-context';
 import { api } from '@/lib/api';
-import type { GlobalDashboard, UsageMetrics } from '@/lib/types';
+import type { GlobalDashboard, UsageMetrics, OcrAccuracy, CorrectionRecord } from '@/lib/types';
 import {
   Building2,
   Users,
@@ -15,6 +15,11 @@ import {
   Zap,
   Eye,
   Filter,
+  Target,
+  PenTool,
+  ExternalLink,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import type { ComponentType } from 'react';
 import type { LucideProps } from 'lucide-react';
@@ -53,6 +58,25 @@ function formatUsd(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
+function formatPct(n: number): string {
+  return `${(n * 100).toFixed(1)}%`;
+}
+
+const CAMPO_LABELS: Record<string, string> = {
+  entradaManha: 'Ent. Manhã',
+  saidaManha: 'Saída Manhã',
+  entradaTarde: 'Ent. Tarde',
+  saidaTarde: 'Saída Tarde',
+  entradaExtra: 'Ent. Extra',
+  saidaExtra: 'Saída Extra',
+  entradaManhaCorrigida: 'Ent. Manhã',
+  saidaManhaCorrigida: 'Saída Manhã',
+  entradaTardeCorrigida: 'Ent. Tarde',
+  saidaTardeCorrigida: 'Saída Tarde',
+  entradaExtraCorrigida: 'Ent. Extra',
+  saidaExtraCorrigida: 'Saída Extra',
+};
+
 export default function AdminDashboardPage() {
   const { accessToken } = useAuthContext();
   const [dashboard, setDashboard] = useState<GlobalDashboard | null>(null);
@@ -62,6 +86,12 @@ export default function AdminDashboardPage() {
   const [usageLoading, setUsageLoading] = useState(true);
   const [filtroDataDe, setFiltroDataDe] = useState('');
   const [filtroDataAte, setFiltroDataAte] = useState('');
+  const [accuracy, setAccuracy] = useState<OcrAccuracy | null>(null);
+  const [accuracyLoading, setAccuracyLoading] = useState(true);
+  const [corrections, setCorrections] = useState<CorrectionRecord[]>([]);
+  const [correctionsPage, setCorrectionsPage] = useState(1);
+  const [correctionsTotalPages, setCorrectionsTotalPages] = useState(1);
+  const [correctionsLoading, setCorrectionsLoading] = useState(true);
 
   const fetchDashboard = useCallback(async () => {
     if (!accessToken) return;
@@ -99,6 +129,51 @@ export default function AdminDashboardPage() {
     }
   }, [accessToken, filtroDataDe, filtroDataAte]);
 
+  const fetchAccuracy = useCallback(async () => {
+    if (!accessToken) return;
+    setAccuracyLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (filtroDataDe) params.set('de', filtroDataDe);
+      if (filtroDataAte) params.set('ate', filtroDataAte);
+      const qs = params.toString();
+      const response = await api.get<OcrAccuracy>(
+        `/api/v1/dashboard/ocr-accuracy${qs ? `?${qs}` : ''}`,
+        accessToken,
+      );
+      setAccuracy(response.data);
+    } catch {
+      // Silently fail — accuracy is non-critical
+    } finally {
+      setAccuracyLoading(false);
+    }
+  }, [accessToken, filtroDataDe, filtroDataAte]);
+
+  const fetchCorrections = useCallback(async () => {
+    if (!accessToken) return;
+    setCorrectionsLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('page', String(correctionsPage));
+      params.set('limit', '10');
+      if (filtroDataDe) params.set('de', filtroDataDe);
+      if (filtroDataAte) params.set('ate', filtroDataAte);
+      const response = await api.get<CorrectionRecord[]>(
+        `/api/v1/dashboard/corrections?${params.toString()}`,
+        accessToken,
+      );
+      setCorrections(response.data);
+      const meta = (response as { meta?: { page: number; limit: number; total: number } }).meta;
+      if (meta) {
+        setCorrectionsTotalPages(Math.ceil(meta.total / meta.limit) || 1);
+      }
+    } catch {
+      // Silently fail
+    } finally {
+      setCorrectionsLoading(false);
+    }
+  }, [accessToken, correctionsPage, filtroDataDe, filtroDataAte]);
+
   useEffect(() => {
     void fetchDashboard();
   }, [fetchDashboard]);
@@ -106,6 +181,14 @@ export default function AdminDashboardPage() {
   useEffect(() => {
     void fetchUsage();
   }, [fetchUsage]);
+
+  useEffect(() => {
+    void fetchAccuracy();
+  }, [fetchAccuracy]);
+
+  useEffect(() => {
+    void fetchCorrections();
+  }, [fetchCorrections]);
 
   if (loading) {
     return (
@@ -432,6 +515,248 @@ export default function AdminDashboardPage() {
             </details>
           </div>
         ) : null}
+      </div>
+
+      {/* ================================================================ */}
+      {/* ACURÁCIA OCR & CORREÇÕES                                       */}
+      {/* ================================================================ */}
+      <div className="rounded-xl bg-white p-6 shadow-sm">
+        <h3 className="mb-6 text-lg font-semibold text-gray-900">
+          Acurácia OCR & Correções Humanas
+        </h3>
+
+        {accuracyLoading ? (
+          <div className="flex items-center justify-center py-8">
+            <p className="text-sm text-gray-400">Carregando métricas de acurácia...</p>
+          </div>
+        ) : accuracy && accuracy.totalGroundTruthRecords > 0 ? (
+          <div className="space-y-6">
+            {/* Accuracy cards */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-xl border border-green-200 bg-green-50 p-5">
+                <div className="flex items-center gap-2 mb-2">
+                  <Target size={18} className="text-green-600" />
+                  <span className="text-sm font-medium text-green-800">Acurácia GPT-5.2</span>
+                </div>
+                <p className="text-3xl font-bold text-green-700">
+                  {formatPct(accuracy.globalAccuracy.gpt)}
+                </p>
+              </div>
+              <div className="rounded-xl border border-blue-200 bg-blue-50 p-5">
+                <div className="flex items-center gap-2 mb-2">
+                  <Target size={18} className="text-blue-600" />
+                  <span className="text-sm font-medium text-blue-800">Acurácia DI</span>
+                </div>
+                <p className="text-3xl font-bold text-blue-700">
+                  {formatPct(accuracy.globalAccuracy.di)}
+                </p>
+              </div>
+              <div className="rounded-xl border border-orange-200 bg-orange-50 p-5">
+                <div className="flex items-center gap-2 mb-2">
+                  <PenTool size={18} className="text-orange-600" />
+                  <span className="text-sm font-medium text-orange-800">Total Correções</span>
+                </div>
+                <p className="text-3xl font-bold text-orange-700">
+                  {accuracy.totalCorrections}
+                </p>
+              </div>
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-5">
+                <div className="flex items-center gap-2 mb-2">
+                  <FileText size={18} className="text-gray-600" />
+                  <span className="text-sm font-medium text-gray-800">Ground Truth</span>
+                </div>
+                <p className="text-3xl font-bold text-gray-700">
+                  {accuracy.totalGroundTruthRecords}
+                </p>
+              </div>
+            </div>
+
+            {/* Accuracy by field */}
+            {accuracy.byField.length > 0 && (
+              <div>
+                <h4 className="mb-2 text-sm font-medium text-gray-700">Acurácia por Campo</h4>
+                <div className="overflow-x-auto rounded-lg border border-gray-200">
+                  <table className="w-full text-xs">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-4 py-2 text-left font-medium text-gray-500">Campo</th>
+                        <th className="px-4 py-2 text-right font-medium text-gray-500">Amostras</th>
+                        <th className="px-4 py-2 text-right font-medium text-gray-500">Acurácia DI</th>
+                        <th className="px-4 py-2 text-right font-medium text-gray-500">Acurácia GPT</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {accuracy.byField.map((f) => (
+                        <tr key={f.campo}>
+                          <td className="px-4 py-2 text-gray-700">{CAMPO_LABELS[f.campo] ?? f.campo}</td>
+                          <td className="px-4 py-2 text-right font-mono text-gray-600">{f.total}</td>
+                          <td className={`px-4 py-2 text-right font-mono ${f.acuraciaDi >= 0.9 ? 'text-green-700' : f.acuraciaDi >= 0.7 ? 'text-yellow-700' : 'text-red-700'}`}>
+                            {formatPct(f.acuraciaDi)}
+                          </td>
+                          <td className={`px-4 py-2 text-right font-mono ${f.acuraciaGpt >= 0.9 ? 'text-green-700' : f.acuraciaGpt >= 0.7 ? 'text-yellow-700' : 'text-red-700'}`}>
+                            {formatPct(f.acuraciaGpt)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Accuracy by card type */}
+            {Object.keys(accuracy.byTipoCartao).length > 0 && (
+              <div>
+                <h4 className="mb-2 text-sm font-medium text-gray-700">Acurácia por Tipo de Cartão</h4>
+                <div className="overflow-x-auto rounded-lg border border-gray-200">
+                  <table className="w-full text-xs">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-4 py-2 text-left font-medium text-gray-500">Tipo</th>
+                        <th className="px-4 py-2 text-right font-medium text-gray-500">Amostras</th>
+                        <th className="px-4 py-2 text-right font-medium text-gray-500">Acurácia DI</th>
+                        <th className="px-4 py-2 text-right font-medium text-gray-500">Acurácia GPT</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {Object.entries(accuracy.byTipoCartao).map(([tipo, stats]) => (
+                        <tr key={tipo}>
+                          <td className="px-4 py-2 text-gray-700">{tipo}</td>
+                          <td className="px-4 py-2 text-right font-mono text-gray-600">{stats.total}</td>
+                          <td className={`px-4 py-2 text-right font-mono ${stats.di >= 0.9 ? 'text-green-700' : stats.di >= 0.7 ? 'text-yellow-700' : 'text-red-700'}`}>
+                            {formatPct(stats.di)}
+                          </td>
+                          <td className={`px-4 py-2 text-right font-mono ${stats.gpt >= 0.9 ? 'text-green-700' : stats.gpt >= 0.7 ? 'text-yellow-700' : 'text-red-700'}`}>
+                            {formatPct(stats.gpt)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Corrections by user */}
+            {accuracy.correctionsByUser.length > 0 && (
+              <div>
+                <h4 className="mb-2 text-sm font-medium text-gray-700">Correções por Revisor</h4>
+                <div className="overflow-x-auto rounded-lg border border-gray-200">
+                  <table className="w-full text-xs">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-4 py-2 text-left font-medium text-gray-500">Revisor</th>
+                        <th className="px-4 py-2 text-left font-medium text-gray-500">Email</th>
+                        <th className="px-4 py-2 text-right font-medium text-gray-500">Correções</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {accuracy.correctionsByUser.map((u) => (
+                        <tr key={u.userId}>
+                          <td className="px-4 py-2 font-medium text-gray-700">{u.nome}</td>
+                          <td className="px-4 py-2 text-gray-500">{u.email}</td>
+                          <td className="px-4 py-2 text-right font-mono font-semibold text-gray-900">{u.count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Corrections detail table */}
+            <div>
+              <h4 className="mb-2 text-sm font-medium text-gray-700">Histórico de Correções</h4>
+              {correctionsLoading ? (
+                <p className="text-sm text-gray-400 py-4">Carregando...</p>
+              ) : corrections.length > 0 ? (
+                <>
+                  <div className="overflow-x-auto rounded-lg border border-gray-200">
+                    <table className="w-full text-xs">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-3 py-2 text-left font-medium text-gray-500">Data</th>
+                          <th className="px-3 py-2 text-left font-medium text-gray-500">Revisor</th>
+                          <th className="px-3 py-2 text-left font-medium text-gray-500">Funcionário</th>
+                          <th className="px-3 py-2 text-left font-medium text-gray-500">Campo</th>
+                          <th className="px-3 py-2 text-center font-medium text-gray-500">Valor Original</th>
+                          <th className="px-3 py-2 text-center font-medium text-gray-500">Valor Corrigido</th>
+                          <th className="px-3 py-2 text-center font-medium text-gray-500">PDF</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {corrections.map((c) => (
+                          <tr key={c.id} className="hover:bg-gray-50">
+                            <td className="px-3 py-2 text-gray-600 whitespace-nowrap">
+                              {new Date(c.createdAt).toLocaleDateString('pt-BR')}{' '}
+                              <span className="text-gray-400">
+                                {new Date(c.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-gray-700">{c.user.nome}</td>
+                            <td className="px-3 py-2 text-gray-700">{c.cartaoPonto.nomeExtraido ?? '—'}</td>
+                            <td className="px-3 py-2 text-gray-600">{CAMPO_LABELS[c.campo] ?? c.campo}</td>
+                            <td className="px-3 py-2 text-center">
+                              <span className="rounded bg-red-50 px-2 py-0.5 font-mono text-red-700">
+                                {c.valorAnterior ?? '—'}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              <span className="rounded bg-green-50 px-2 py-0.5 font-mono text-green-700">
+                                {c.valorNovo ?? '—'}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              <a
+                                href={`/revisao/${c.cartaoPonto.id}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800"
+                                title={`${c.cartaoPonto.upload.nomeArquivo} — pág. ${c.cartaoPonto.paginaPdf}`}
+                              >
+                                <ExternalLink size={12} />
+                                p.{c.cartaoPonto.paginaPdf}
+                              </a>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {/* Pagination */}
+                  <div className="mt-3 flex items-center justify-between">
+                    <p className="text-xs text-gray-500">
+                      Página {correctionsPage} de {correctionsTotalPages}
+                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setCorrectionsPage((p) => Math.max(1, p - 1))}
+                        disabled={correctionsPage <= 1}
+                        className="flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        <ChevronLeft size={12} /> Anterior
+                      </button>
+                      <button
+                        onClick={() => setCorrectionsPage((p) => Math.min(correctionsTotalPages, p + 1))}
+                        disabled={correctionsPage >= correctionsTotalPages}
+                        className="flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        Próxima <ChevronRight size={12} />
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <p className="py-4 text-sm text-gray-400">Nenhuma correção registrada ainda.</p>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="py-8 text-center text-sm text-gray-400">
+            <p>Nenhum dado de acurácia disponível.</p>
+            <p className="mt-1 text-xs">Aprove cartões na revisão para gerar ground truth.</p>
+          </div>
+        )}
       </div>
 
       {/* Status Breakdown */}
