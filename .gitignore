@@ -13,15 +13,14 @@ dist/
 coverage/
 
 # Variáveis de ambiente
-*.env
+.env
 .env.*
-.env.local
-.env.azure-*
 !.env.example
 
 # Dados Docker locais
 postgres_data/
 azurite_data/
+redis_data/
 
 # Logs
 *.log
@@ -35,7 +34,27 @@ pnpm-debug.log*
 .idea/
 *.swp
 *.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Temporários
+tmp/
+temp/
+*.tmp
+
+# Debug scripts (local only)
+debug-*.js
+debug-*.py
+clean-db.js
+
+# Upload temp
+uploads/
+*.pdf
+!docs/**/*.pdf

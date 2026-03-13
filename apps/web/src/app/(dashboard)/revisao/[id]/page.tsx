@@ -1,11 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/use-auth';
 import { api } from '@/lib/api';
 import type { CartaoPontoRevisao, Batida, OcrFeedbackItem, ConsistencyIssue, OutlierFlag } from '@/lib/types';
-import { ArrowLeft, Check, X } from 'lucide-react';
+import { ArrowLeft, Check, X, Crosshair } from 'lucide-react';
 import Link from 'next/link';
 import TimeInput from '@/components/ui/time-input';
 
@@ -122,6 +122,14 @@ export default function RevisaoDetailPage() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  /** Sincroniza o PDF na página do cartão atual */
+  const syncPdfToCurrentPage = useCallback(() => {
+    if (iframeRef.current && pdfUrl && cartao?.paginaPdf) {
+      iframeRef.current.src = `${pdfUrl}#page=${cartao.paginaPdf}`;
+    }
+  }, [pdfUrl, cartao?.paginaPdf]);
 
   const fetchCartao = useCallback(async () => {
     if (!accessToken || !id) return;
@@ -321,13 +329,24 @@ export default function RevisaoDetailPage() {
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         {/* Left: PDF Viewer */}
         <div className="flex h-[calc(100vh-220px)] flex-col rounded-xl bg-white shadow-sm">
-          <div className="flex-shrink-0 border-b border-gray-200 px-6 py-3">
+          <div className="flex flex-shrink-0 items-center justify-between border-b border-gray-200 px-6 py-3">
             <h3 className="text-sm font-medium text-gray-700">
               Visualização do PDF — Página {cartao.paginaPdf}
             </h3>
+            {pdfUrl && (
+              <button
+                onClick={syncPdfToCurrentPage}
+                className="flex items-center gap-1.5 rounded-md bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100"
+                title="Sincronizar PDF na página do cartão atual"
+              >
+                <Crosshair size={14} />
+                Sincronizar
+              </button>
+            )}
           </div>
           {pdfUrl ? (
             <iframe
+              ref={iframeRef}
               src={`${pdfUrl}#page=${cartao.paginaPdf}`}
               className="min-h-0 flex-1 rounded-b-xl"
               title={`PDF - ${cartao.upload?.nomeArquivo ?? 'Cartão de Ponto'}`}
