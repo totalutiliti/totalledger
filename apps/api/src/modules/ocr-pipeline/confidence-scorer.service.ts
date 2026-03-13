@@ -72,6 +72,8 @@ export class ConfidenceScorerService {
       'saidaManha',
       'entradaTarde',
       'saidaTarde',
+      'entradaExtra',
+      'saidaExtra',
     ] as const;
     const confianca: Record<string, number> = {};
 
@@ -179,6 +181,20 @@ export class ConfidenceScorerService {
       const saida = this.timeToMinutes(batida.saidaManha);
       const entrada = this.timeToMinutes(batida.entradaTarde);
       if (saida !== null && entrada !== null && entrada < saida) return true;
+    }
+
+    // Check saidaTarde < entradaExtra (extra shift after regular)
+    if (batida.saidaTarde && batida.entradaExtra) {
+      const saida = this.timeToMinutes(batida.saidaTarde);
+      const entrada = this.timeToMinutes(batida.entradaExtra);
+      if (saida !== null && entrada !== null && entrada < saida) return true;
+    }
+
+    // Check entradaExtra < saidaExtra
+    if (batida.entradaExtra && batida.saidaExtra) {
+      const entrada = this.timeToMinutes(batida.entradaExtra);
+      const saida = this.timeToMinutes(batida.saidaExtra);
+      if (entrada !== null && saida !== null && saida <= entrada) return true;
     }
 
     return false;

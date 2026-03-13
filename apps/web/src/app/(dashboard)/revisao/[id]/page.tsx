@@ -4,9 +4,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/use-auth';
 import { api } from '@/lib/api';
-import type { CartaoPontoRevisao, Batida } from '@/lib/types';
+import type { CartaoPontoRevisao, Batida, OcrFeedbackItem, ConsistencyIssue, OutlierFlag } from '@/lib/types';
 import { ArrowLeft, Check, X } from 'lucide-react';
 import Link from 'next/link';
+import TimeInput from '@/components/ui/time-input';
 
 function getOverallConfidence(confianca: Record<string, number> | null): number {
   if (!confianca) return 0;
@@ -15,17 +16,77 @@ function getOverallConfidence(confianca: Record<string, number> | null): number 
   return values.reduce((sum, v) => sum + v, 0) / values.length;
 }
 
-function confidenceColor(confianca: number): string {
-  if (confianca >= 0.9) return 'bg-green-50 border-green-200';
-  if (confianca >= 0.8) return 'bg-yellow-50 border-yellow-200';
-  return 'bg-red-50 border-red-200';
+/** Cell-level confidence color (background only) */
+function cellConfidenceBg(confianca: number): string {
+  if (confianca === 0) return '';
+  if (confianca >= 0.9) return 'bg-green-50';
+  if (confianca >= 0.8) return 'bg-yellow-50';
+  if (confianca >= 0.6) return 'bg-orange-50';
+  return 'bg-red-50';
+}
+
+/** Cell-level confidence border color for inputs */
+function cellConfidenceBorder(confianca: number): string {
+  if (confianca === 0) return 'border-gray-300';
+  if (confianca >= 0.9) return 'border-green-300';
+  if (confianca >= 0.8) return 'border-yellow-300';
+  if (confianca >= 0.6) return 'border-orange-300';
+  return 'border-red-400';
 }
 
 function confidenceText(confianca: number): string {
   if (confianca >= 0.9) return 'text-green-700';
   if (confianca >= 0.8) return 'text-yellow-700';
+  if (confianca >= 0.6) return 'text-orange-600';
   return 'text-red-700';
 }
+
+/** Build tooltip text for a field including DI vs GPT info + violations */
+function buildTooltip(
+  field: string,
+  fieldConf: number,
+  feedback: OcrFeedbackItem | undefined,
+  consistencyIssues: ConsistencyIssue[] | null | undefined,
+  outlierFlags: OutlierFlag[] | null | undefined,
+): string {
+  const parts: string[] = [];
+
+  parts.push(`Confiança: ${(fieldConf * 100).toFixed(0)}%`);
+
+  if (feedback) {
+    if (feedback.valorDi !== null) parts.push(`DI: ${feedback.valorDi}`);
+    if (feedback.valorGpt !== null) parts.push(`GPT: ${feedback.valorGpt}`);
+    if (feedback.concordaDiGpt === false) parts.push('⚡ DI ≠ GPT');
+    if (feedback.valorHumano !== null) parts.push(`Humano: ${feedback.valorHumano}`);
+  }
+
+  // Field-specific consistency issues
+  const fieldIssues = (consistencyIssues ?? []).filter((i) =>
+    i.affectedFields.includes(field),
+  );
+  for (const issue of fieldIssues) {
+    parts.push(`${issue.severity === 'error' ? '🔴' : issue.severity === 'warning' ? '🟡' : 'ℹ️'} ${issue.message}`);
+  }
+
+  // Field-specific outlier flags
+  const fieldOutliers = (outlierFlags ?? []).filter((f) => f.campo === field);
+  for (const flag of fieldOutliers) {
+    parts.push(`📊 ${flag.message}`);
+  }
+
+  return parts.join('\n');
+}
+
+const TIME_FIELDS = [
+  'entradaManha',
+  'saidaManha',
+  'entradaTarde',
+  'saidaTarde',
+  'entradaExtra',
+  'saidaExtra',
+] as const;
+
+type TimeField = typeof TIME_FIELDS[number];
 
 interface BatidaEdit {
   id: string;
@@ -42,6 +103,10 @@ interface BatidaEdit {
   isManuscrito: boolean;
   isInconsistente: boolean;
   isFaltaDia: boolean;
+  gptFailed?: boolean;
+  consistencyIssues?: ConsistencyIssue[] | null;
+  outlierFlags?: OutlierFlag[] | null;
+  ocrFeedback?: OcrFeedbackItem[];
 }
 
 export default function RevisaoDetailPage() {
@@ -83,6 +148,10 @@ export default function RevisaoDetailPage() {
           isManuscrito: b.isManuscrito,
           isInconsistente: b.isInconsistente,
           isFaltaDia: b.isFaltaDia,
+          gptFailed: b.gptFailed,
+          consistencyIssues: b.consistencyIssues,
+          outlierFlags: b.outlierFlags,
+          ocrFeedback: b.ocrFeedback,
         })),
       );
       setError('');
@@ -127,7 +196,7 @@ export default function RevisaoDetailPage() {
 
   const updateBatida = (
     batidaId: string,
-    field: keyof Pick<BatidaEdit, 'entradaManha' | 'saidaManha' | 'entradaTarde' | 'saidaTarde' | 'entradaExtra' | 'saidaExtra'>,
+    field: TimeField,
     value: string,
   ) => {
     setBatidas((prev) =>
@@ -180,6 +249,17 @@ export default function RevisaoDetailPage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  /** Get OcrFeedback for a specific field of a batida */
+  const getFeedback = (batida: BatidaEdit, field: string): OcrFeedbackItem | undefined => {
+    return batida.ocrFeedback?.find((f) => f.campo === field);
+  };
+
+  /** Check if DI disagrees with GPT for a field */
+  const hasDiGptDisagreement = (batida: BatidaEdit, field: string): boolean => {
+    const feedback = getFeedback(batida, field);
+    return feedback?.concordaDiGpt === false;
   };
 
   if (loading) {
@@ -304,14 +384,20 @@ export default function RevisaoDetailPage() {
                   <th className="px-2 py-2 font-medium text-gray-500">
                     Saída Tarde
                   </th>
+                  <th className="px-2 py-2 font-medium text-gray-500">
+                    Ent. Extra
+                  </th>
+                  <th className="px-2 py-2 font-medium text-gray-500">
+                    Saída Extra
+                  </th>
                   <th className="px-2 py-2 font-medium text-gray-500">Conf.</th>
                 </tr>
               </thead>
               <tbody>
-                {batidas.map((batida) => (
+                {batidas.map((batida, rowIndex) => (
                   <tr
                     key={batida.id}
-                    className={`border-b border-gray-100 ${confidenceColor(batida.overallConfianca)} ${batida.isFaltaDia ? 'opacity-50' : ''}`}
+                    className={`border-b border-gray-100 ${batida.isFaltaDia ? 'opacity-50' : ''}`}
                   >
                     <td className="px-2 py-1.5 font-medium">{batida.dia}</td>
                     <td className="px-2 py-1.5 text-gray-600">
@@ -322,55 +408,50 @@ export default function RevisaoDetailPage() {
                       {batida.isInconsistente && (
                         <span className="ml-1 text-red-500" title="Inconsistente">⚠</span>
                       )}
+                      {batida.gptFailed && (
+                        <span className="ml-1 text-gray-400" title="GPT Vision indisponível">🚫</span>
+                      )}
                     </td>
-                    <td className="px-2 py-1.5">
-                      <input
-                        type="text"
-                        value={batida.entradaManha}
-                        onChange={(e) =>
-                          updateBatida(batida.id, 'entradaManha', e.target.value)
-                        }
-                        placeholder="--:--"
-                        title={`Confiança: ${((batida.confianca?.entradaManha ?? 0) * 100).toFixed(0)}%`}
-                        className="w-16 rounded border border-gray-300 px-1.5 py-1 text-xs focus:border-blue-500 focus:outline-none"
-                      />
-                    </td>
-                    <td className="px-2 py-1.5">
-                      <input
-                        type="text"
-                        value={batida.saidaManha}
-                        onChange={(e) =>
-                          updateBatida(batida.id, 'saidaManha', e.target.value)
-                        }
-                        placeholder="--:--"
-                        title={`Confiança: ${((batida.confianca?.saidaManha ?? 0) * 100).toFixed(0)}%`}
-                        className="w-16 rounded border border-gray-300 px-1.5 py-1 text-xs focus:border-blue-500 focus:outline-none"
-                      />
-                    </td>
-                    <td className="px-2 py-1.5">
-                      <input
-                        type="text"
-                        value={batida.entradaTarde}
-                        onChange={(e) =>
-                          updateBatida(batida.id, 'entradaTarde', e.target.value)
-                        }
-                        placeholder="--:--"
-                        title={`Confiança: ${((batida.confianca?.entradaTarde ?? 0) * 100).toFixed(0)}%`}
-                        className="w-16 rounded border border-gray-300 px-1.5 py-1 text-xs focus:border-blue-500 focus:outline-none"
-                      />
-                    </td>
-                    <td className="px-2 py-1.5">
-                      <input
-                        type="text"
-                        value={batida.saidaTarde}
-                        onChange={(e) =>
-                          updateBatida(batida.id, 'saidaTarde', e.target.value)
-                        }
-                        placeholder="--:--"
-                        title={`Confiança: ${((batida.confianca?.saidaTarde ?? 0) * 100).toFixed(0)}%`}
-                        className="w-16 rounded border border-gray-300 px-1.5 py-1 text-xs focus:border-blue-500 focus:outline-none"
-                      />
-                    </td>
+                    {TIME_FIELDS.map((field, colIndex) => {
+                      const fieldConf = batida.confianca?.[field] ?? 0;
+                      const feedback = getFeedback(batida, field);
+                      const disagreement = hasDiGptDisagreement(batida, field);
+                      const tooltip = buildTooltip(
+                        field,
+                        fieldConf,
+                        feedback,
+                        batida.consistencyIssues,
+                        batida.outlierFlags,
+                      );
+
+                      return (
+                        <td
+                          key={field}
+                          className={`px-2 py-1.5 ${cellConfidenceBg(fieldConf)}`}
+                        >
+                          <div className="flex items-center gap-0.5">
+                            <TimeInput
+                              value={batida[field]}
+                              onChange={(v) =>
+                                updateBatida(batida.id, field, v)
+                              }
+                              title={tooltip}
+                              data-row={rowIndex}
+                              data-col={colIndex}
+                              className={`w-14 rounded border px-1.5 py-1 text-xs focus:border-blue-500 focus:outline-none ${cellConfidenceBorder(fieldConf)}`}
+                            />
+                            {disagreement && (
+                              <span
+                                className="text-amber-500 cursor-help"
+                                title={`DI: ${feedback?.valorDi ?? '?'} ≠ GPT: ${feedback?.valorGpt ?? '?'}`}
+                              >
+                                ⚡
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      );
+                    })}
                     <td className="px-2 py-1.5 text-center">
                       <span
                         className={`text-xs font-medium ${confidenceText(batida.overallConfianca)}`}
@@ -396,14 +477,21 @@ export default function RevisaoDetailPage() {
                 Média (80-90%)
               </span>
               <span className="flex items-center gap-1">
+                <span className="inline-block h-3 w-3 rounded bg-orange-200" />
+                Baixa (60-80%)
+              </span>
+              <span className="flex items-center gap-1">
                 <span className="inline-block h-3 w-3 rounded bg-red-200" />
-                Baixa (&lt;80%)
+                Crítica (&lt;60%)
               </span>
               <span className="flex items-center gap-1">
                 <span className="text-orange-500">✎</span> Manuscrito
               </span>
               <span className="flex items-center gap-1">
                 <span className="text-red-500">⚠</span> Inconsistente
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="text-amber-500">⚡</span> DI ≠ GPT
               </span>
             </div>
             <div className="mt-3 flex gap-3">

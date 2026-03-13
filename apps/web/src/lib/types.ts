@@ -55,6 +55,7 @@ export type UploadStatus =
   | 'AGUARDANDO'
   | 'PROCESSANDO'
   | 'PROCESSADO'
+  | 'PROCESSADO_PARCIAL'
   | 'ERRO'
   | 'VALIDADO'
   | 'EXPORTADO';
@@ -121,6 +122,35 @@ export interface GlobalDashboard {
   uploadsByTenant: { tenantNome: string; count: number }[];
 }
 
+export interface UsageMetrics {
+  periodo: { de: string; ate: string };
+  documentIntelligence: {
+    totalPaginas: number;
+    custoEstimadoUsd: number;
+    precoPor1000: number;
+  };
+  gptMini: {
+    chamadas: number;
+    tokensIn: number;
+    tokensOut: number;
+    custoUsd: number;
+  };
+  gpt52: {
+    chamadas: number;
+    tokensIn: number;
+    tokensOut: number;
+    custoUsd: number;
+  };
+  gpt4oMini: {
+    chamadas: number;
+    tokensIn: number;
+    tokensOut: number;
+    custoUsd: number;
+  };
+  custoTotalUsd: number;
+  totalUploadsProcessados: number;
+}
+
 export type RevisaoStatus = 'PENDENTE' | 'EM_REVISAO' | 'APROVADO' | 'REJEITADO';
 
 export interface CartaoPontoRevisao {
@@ -138,6 +168,8 @@ export interface CartaoPontoRevisao {
   tipoCartao: string;
   statusRevisao: RevisaoStatus;
   confiancaGeral: number | null;
+  prioridadeRevisao: number | null;
+  prioridadeMotivos: string[] | null;
   upload?: {
     id: string;
     nomeArquivo: string;
@@ -151,6 +183,34 @@ export interface CartaoPontoRevisao {
   };
   batidas?: Batida[];
   createdAt: string;
+}
+
+export interface ConsistencyIssue {
+  rule: string;
+  severity: 'error' | 'warning' | 'info';
+  penalty: number;
+  message: string;
+  affectedFields: string[];
+}
+
+export interface OutlierFlag {
+  campo: string;
+  valor: string;
+  dia: number;
+  zScore: number;
+  severity: 'warning' | 'error';
+  penalty: number;
+  message: string;
+}
+
+export interface OcrFeedbackItem {
+  id: string;
+  campo: string;
+  valorDi: string | null;
+  valorGpt: string | null;
+  valorFinal: string | null;
+  valorHumano: string | null;
+  concordaDiGpt: boolean | null;
 }
 
 export interface Batida {
@@ -168,4 +228,8 @@ export interface Batida {
   isManuscrito: boolean;
   isInconsistente: boolean;
   isFaltaDia: boolean;
+  gptFailed?: boolean;
+  consistencyIssues?: ConsistencyIssue[] | null;
+  outlierFlags?: OutlierFlag[] | null;
+  ocrFeedback?: OcrFeedbackItem[];
 }

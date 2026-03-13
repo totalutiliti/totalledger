@@ -4,6 +4,7 @@ import {
   DocumentAnalysisClient,
   AzureKeyCredential,
 } from '@azure/ai-form-recognizer';
+import { generateMockOcrResult, hashBuffer } from './mock-ocr-generator';
 
 export interface OcrRawResult {
   pages: OcrPage[];
@@ -34,9 +35,13 @@ export interface OcrTable {
 export interface OcrTableCell {
   rowIndex: number;
   columnIndex: number;
+  columnSpan: number;
+  rowSpan: number;
   content: string;
   confidence: number;
   isHeader: boolean;
+  /** Polygon coordinates from Azure DI boundingRegions (flattened [x1,y1,x2,y2,...]) */
+  boundingBox: number[];
 }
 
 @Injectable()
@@ -63,7 +68,7 @@ export class DocumentIntelligenceService {
 
     if (!this.client) {
       this.logger.warn('Document Intelligence not configured, returning mock data');
-      return this.getMockResult();
+      return this.getMockResult(pdfBuffer);
     }
 
     try {
@@ -101,9 +106,12 @@ export class DocumentIntelligenceService {
         cells: (table.cells ?? []).map((cell) => ({
           rowIndex: cell.rowIndex,
           columnIndex: cell.columnIndex,
+          columnSpan: cell.columnSpan ?? 1,
+          rowSpan: cell.rowSpan ?? 1,
           content: cell.content,
           confidence: (cell as unknown as Record<string, unknown>)['confidence'] as number ?? 0.9,
           isHeader: cell.kind === 'columnHeader' || cell.kind === 'rowHeader',
+          boundingBox: cell.boundingRegions?.[0]?.polygon?.flatMap((p) => [p.x, p.y]) ?? [],
         })),
       }));
 
@@ -119,66 +127,26 @@ export class DocumentIntelligenceService {
     }
   }
 
-  private getMockResult(): OcrRawResult {
-    // Return a realistic mock for development without Azure
-    return {
-      pages: [
-        {
-          pageNumber: 1,
-          width: 612,
-          height: 792,
-          lines: [
-            { content: 'CARTÃO DE PONTO', confidence: 0.98, boundingBox: [] },
-            { content: 'Empresa: Construlaje Materiais de Construção Ltda', confidence: 0.95, boundingBox: [] },
-            { content: 'CNPJ: 46.260.666/0001-80', confidence: 0.92, boundingBox: [] },
-            { content: 'Funcionário: João Pedro Santos', confidence: 0.94, boundingBox: [] },
-            { content: 'Cargo: Pedreiro', confidence: 0.93, boundingBox: [] },
-            { content: 'Mês: 12/2024', confidence: 0.96, boundingBox: [] },
-            { content: 'Horário: 07:00-16:00 Int. 11:00-12:00', confidence: 0.91, boundingBox: [] },
-          ],
-        },
-      ],
-      tables: [
-        {
-          pageNumber: 1,
-          rowCount: 32,
-          columnCount: 7,
-          cells: [
-            { rowIndex: 0, columnIndex: 0, content: 'Dia', confidence: 0.99, isHeader: true },
-            { rowIndex: 0, columnIndex: 1, content: 'Dia Sem.', confidence: 0.99, isHeader: true },
-            { rowIndex: 0, columnIndex: 2, content: 'Entrada', confidence: 0.99, isHeader: true },
-            { rowIndex: 0, columnIndex: 3, content: 'Saída', confidence: 0.99, isHeader: true },
-            { rowIndex: 0, columnIndex: 4, content: 'Entrada', confidence: 0.99, isHeader: true },
-            { rowIndex: 0, columnIndex: 5, content: 'Saída', confidence: 0.99, isHeader: true },
-            { rowIndex: 0, columnIndex: 6, content: 'Obs.', confidence: 0.99, isHeader: true },
-            // Day 1
-            { rowIndex: 1, columnIndex: 0, content: '01', confidence: 0.98, isHeader: false },
-            { rowIndex: 1, columnIndex: 1, content: 'Seg', confidence: 0.97, isHeader: false },
-            { rowIndex: 1, columnIndex: 2, content: '07:02', confidence: 0.95, isHeader: false },
-            { rowIndex: 1, columnIndex: 3, content: '11:05', confidence: 0.93, isHeader: false },
-            { rowIndex: 1, columnIndex: 4, content: '12:00', confidence: 0.94, isHeader: false },
-            { rowIndex: 1, columnIndex: 5, content: '16:03', confidence: 0.92, isHeader: false },
-            { rowIndex: 1, columnIndex: 6, content: '', confidence: 0.99, isHeader: false },
-            // Day 2
-            { rowIndex: 2, columnIndex: 0, content: '02', confidence: 0.98, isHeader: false },
-            { rowIndex: 2, columnIndex: 1, content: 'Ter', confidence: 0.97, isHeader: false },
-            { rowIndex: 2, columnIndex: 2, content: '07:10', confidence: 0.70, isHeader: false }, // low confidence
-            { rowIndex: 2, columnIndex: 3, content: '11:00', confidence: 0.94, isHeader: false },
-            { rowIndex: 2, columnIndex: 4, content: '12:02', confidence: 0.93, isHeader: false },
-            { rowIndex: 2, columnIndex: 5, content: '16:15', confidence: 0.88, isHeader: false },
-            { rowIndex: 2, columnIndex: 6, content: '', confidence: 0.99, isHeader: false },
-            // Day 3 - manuscrito example
-            { rowIndex: 3, columnIndex: 0, content: '03', confidence: 0.97, isHeader: false },
-            { rowIndex: 3, columnIndex: 1, content: 'Qua', confidence: 0.96, isHeader: false },
-            { rowIndex: 3, columnIndex: 2, content: '7:05', confidence: 0.55, isHeader: false }, // very low - manuscrito
-            { rowIndex: 3, columnIndex: 3, content: '11:30', confidence: 0.60, isHeader: false },
-            { rowIndex: 3, columnIndex: 4, content: '12:30', confidence: 0.58, isHeader: false },
-            { rowIndex: 3, columnIndex: 5, content: '16:00', confidence: 0.62, isHeader: false },
-            { rowIndex: 3, columnIndex: 6, content: '', confidence: 0.99, isHeader: false },
-          ],
-        },
-      ],
-      rawResponse: { mock: true },
-    };
+  private async getMockResult(pdfBuffer: Buffer): Promise<OcrRawResult> {
+    let pageCount = 1;
+
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const pdfParse = require('pdf-parse') as (buf: Buffer) => Promise<{ numpages: number }>;
+      const parsed = await pdfParse(pdfBuffer);
+      pageCount = parsed.numpages;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      this.logger.warn(`pdf-parse failed, defaulting to 1 page: ${message}`);
+    }
+
+    const seed = hashBuffer(pdfBuffer);
+
+    this.logger.log('Mock OCR: generating realistic data', {
+      pageCount,
+      seed,
+    });
+
+    return generateMockOcrResult(pageCount, seed);
   }
 }

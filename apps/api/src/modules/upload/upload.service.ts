@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -14,6 +15,7 @@ import {
   PaginationDto,
   buildPaginationMeta,
 } from '../../common/dto/pagination.dto';
+import { computeFileHash } from './file-hash.util';
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 const ALLOWED_MIME_TYPE = 'application/pdf';
@@ -134,6 +136,70 @@ export class UploadService {
       throw new BadRequestException(`Empresa ${dto.empresaId} não encontrada neste tenant`);
     }
 
+    // Calcular hash SHA-256 para deduplicação
+    const fileHash = computeFileHash(file.buffer);
+
+    // Verificar se arquivo já foi processado
+    const existingUpload = await this.prisma.upload.findUnique({
+      where: { fileHash },
+      select: { id: true, status: true, nomeArquivo: true, tenantId: true },
+    });
+
+    if (existingUpload && existingUpload.tenantId === tenantId) {
+      if (
+        existingUpload.status === UploadStatus.PROCESSADO ||
+        existingUpload.status === UploadStatus.PROCESSADO_PARCIAL ||
+        existingUpload.status === UploadStatus.VALIDADO ||
+        existingUpload.status === UploadStatus.EXPORTADO
+      ) {
+        throw new ConflictException(
+          `Arquivo já processado anteriormente (upload: ${existingUpload.id}, arquivo: ${existingUpload.nomeArquivo})`,
+        );
+      }
+
+      // Status ERRO ou PROCESSANDO (travado) — re-upload permitido
+      // Atualiza o registro existente e re-enfileira
+      const { blobUrl: reupBlobUrl, blobPath: reupBlobPath } =
+        await this.blobStorage.uploadPdf(
+          tenantId,
+          dto.empresaId,
+          dto.mesReferencia,
+          file.originalname,
+          file.buffer,
+        );
+
+      const upload = await this.prisma.upload.update({
+        where: { id: existingUpload.id },
+        data: {
+          status: UploadStatus.AGUARDANDO,
+          blobUrl: reupBlobUrl,
+          blobPath: reupBlobPath,
+          nomeArquivo: file.originalname,
+          tamanhoBytes: file.size,
+          totalPaginas: null,
+          paginasProcessadas: null,
+          erroMensagem: null,
+        },
+      });
+
+      await this.ocrQueue.add(
+        'process-pdf',
+        { uploadId: upload.id, tenantId },
+        {
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 5000 },
+        },
+      );
+
+      this.logger.log('Re-upload of failed file — reset and re-enqueued', {
+        tenantId,
+        uploadId: upload.id,
+        previousStatus: existingUpload.status,
+      });
+
+      return upload;
+    }
+
     // Upload to Blob Storage
     const { blobUrl, blobPath } = await this.blobStorage.uploadPdf(
       tenantId,
@@ -154,6 +220,7 @@ export class UploadService {
         blobUrl,
         blobPath,
         tamanhoBytes: file.size,
+        fileHash,
         status: UploadStatus.AGUARDANDO,
       },
     });
@@ -228,7 +295,9 @@ export class UploadService {
       data: {
         status,
         erroMensagem: erroMensagem ?? null,
-        ...(status === UploadStatus.PROCESSADO ? { processadoEm: new Date() } : {}),
+        ...(status === UploadStatus.PROCESSADO || status === UploadStatus.PROCESSADO_PARCIAL
+          ? { processadoEm: new Date() }
+          : {}),
       },
     });
   }

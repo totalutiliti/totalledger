@@ -3,12 +3,18 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useAuthContext } from '@/lib/auth-context';
 import { api } from '@/lib/api';
-import type { GlobalDashboard } from '@/lib/types';
+import type { GlobalDashboard, UsageMetrics } from '@/lib/types';
 import {
   Building2,
   Users,
   Upload,
   CreditCard,
+  DollarSign,
+  FileText,
+  Cpu,
+  Zap,
+  Eye,
+  Filter,
 } from 'lucide-react';
 import type { ComponentType } from 'react';
 import type { LucideProps } from 'lucide-react';
@@ -37,11 +43,25 @@ const STATUS_BG: Record<string, string> = {
   PARCIAL: 'bg-orange-100 text-orange-800',
 };
 
+function formatNumber(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString('pt-BR');
+}
+
+function formatUsd(n: number): string {
+  return `$${n.toFixed(2)}`;
+}
+
 export default function AdminDashboardPage() {
   const { accessToken } = useAuthContext();
   const [dashboard, setDashboard] = useState<GlobalDashboard | null>(null);
+  const [usage, setUsage] = useState<UsageMetrics | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [usageLoading, setUsageLoading] = useState(true);
+  const [filtroDataDe, setFiltroDataDe] = useState('');
+  const [filtroDataAte, setFiltroDataAte] = useState('');
 
   const fetchDashboard = useCallback(async () => {
     if (!accessToken) return;
@@ -59,9 +79,33 @@ export default function AdminDashboardPage() {
     }
   }, [accessToken]);
 
+  const fetchUsage = useCallback(async () => {
+    if (!accessToken) return;
+    setUsageLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (filtroDataDe) params.set('de', filtroDataDe);
+      if (filtroDataAte) params.set('ate', filtroDataAte);
+      const qs = params.toString();
+      const response = await api.get<UsageMetrics>(
+        `/api/v1/dashboard/usage-metrics${qs ? `?${qs}` : ''}`,
+        accessToken,
+      );
+      setUsage(response.data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao carregar métricas de uso');
+    } finally {
+      setUsageLoading(false);
+    }
+  }, [accessToken, filtroDataDe, filtroDataAte]);
+
   useEffect(() => {
     void fetchDashboard();
   }, [fetchDashboard]);
+
+  useEffect(() => {
+    void fetchUsage();
+  }, [fetchUsage]);
 
   if (loading) {
     return (
@@ -71,7 +115,7 @@ export default function AdminDashboardPage() {
     );
   }
 
-  if (error) {
+  if (error && !dashboard) {
     return (
       <div className="rounded-lg bg-red-50 p-4 text-sm text-red-700">{error}</div>
     );
@@ -135,6 +179,259 @@ export default function AdminDashboardPage() {
             </div>
           );
         })}
+      </div>
+
+      {/* ================================================================ */}
+      {/* CONSUMO & CUSTOS — Azure DI + OpenAI                           */}
+      {/* ================================================================ */}
+      <div className="rounded-xl bg-white p-6 shadow-sm">
+        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <h3 className="text-lg font-semibold text-gray-900">
+            Consumo & Custos — Azure + OpenAI
+          </h3>
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={filtroDataDe}
+              onChange={(e) => setFiltroDataDe(e.target.value)}
+              className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              placeholder="De"
+            />
+            <span className="text-gray-400">—</span>
+            <input
+              type="date"
+              value={filtroDataAte}
+              onChange={(e) => setFiltroDataAte(e.target.value)}
+              className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              placeholder="Até"
+            />
+            {(filtroDataDe || filtroDataAte) && (
+              <button
+                onClick={() => {
+                  setFiltroDataDe('');
+                  setFiltroDataAte('');
+                }}
+                className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-200"
+              >
+                Limpar
+              </button>
+            )}
+          </div>
+        </div>
+
+        {usageLoading ? (
+          <div className="flex items-center justify-center py-8">
+            <p className="text-sm text-gray-400">Carregando métricas...</p>
+          </div>
+        ) : usage ? (
+          <div className="space-y-6">
+            {/* Período */}
+            <p className="text-xs text-gray-400">
+              Período: {usage.periodo.de} a {usage.periodo.ate} — {usage.totalUploadsProcessados} uploads processados
+            </p>
+
+            {/* Custo Total */}
+            <div className="rounded-xl border-2 border-indigo-200 bg-indigo-50 p-5">
+              <div className="flex items-center gap-3">
+                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-indigo-100">
+                  <DollarSign size={24} className="text-indigo-600" />
+                </div>
+                <div>
+                  <p className="text-3xl font-bold text-indigo-700">
+                    {formatUsd(usage.custoTotalUsd)}
+                  </p>
+                  <p className="text-sm text-indigo-500">Custo Total Estimado (USD)</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Cards de serviço */}
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-4">
+              {/* Azure Document Intelligence */}
+              <div className="rounded-xl border border-blue-200 bg-blue-50 p-5">
+                <div className="mb-3 flex items-center gap-2">
+                  <FileText size={20} className="text-blue-600" />
+                  <h4 className="font-semibold text-blue-900">Azure Document Intelligence</h4>
+                </div>
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-sm text-blue-700">Páginas processadas</span>
+                    <span className="font-mono font-semibold text-blue-900">
+                      {formatNumber(usage.documentIntelligence.totalPaginas)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-blue-700">Preço (layout)</span>
+                    <span className="font-mono text-sm text-blue-600">
+                      ${usage.documentIntelligence.precoPor1000}/1K pgs
+                    </span>
+                  </div>
+                  <div className="border-t border-blue-200 pt-2">
+                    <div className="flex justify-between">
+                      <span className="text-sm font-medium text-blue-800">Custo</span>
+                      <span className="font-mono font-bold text-blue-900">
+                        {formatUsd(usage.documentIntelligence.custoEstimadoUsd)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* GPT-5-mini */}
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-5">
+                <div className="mb-3 flex items-center gap-2">
+                  <Zap size={20} className="text-emerald-600" />
+                  <h4 className="font-semibold text-emerald-900">GPT-5-mini</h4>
+                </div>
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-sm text-emerald-700">Chamadas</span>
+                    <span className="font-mono font-semibold text-emerald-900">
+                      {formatNumber(usage.gptMini.chamadas)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-emerald-700">Tokens in</span>
+                    <span className="font-mono text-sm text-emerald-600">
+                      {formatNumber(usage.gptMini.tokensIn)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-emerald-700">Tokens out</span>
+                    <span className="font-mono text-sm text-emerald-600">
+                      {formatNumber(usage.gptMini.tokensOut)}
+                    </span>
+                  </div>
+                  <div className="border-t border-emerald-200 pt-2">
+                    <div className="flex justify-between">
+                      <span className="text-sm font-medium text-emerald-800">Custo</span>
+                      <span className="font-mono font-bold text-emerald-900">
+                        {formatUsd(usage.gptMini.custoUsd)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* GPT-5.2 */}
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-5">
+                <div className="mb-3 flex items-center gap-2">
+                  <Eye size={20} className="text-amber-600" />
+                  <h4 className="font-semibold text-amber-900">GPT-5.2 (Vision)</h4>
+                </div>
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-sm text-amber-700">Chamadas</span>
+                    <span className="font-mono font-semibold text-amber-900">
+                      {formatNumber(usage.gpt52.chamadas)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-amber-700">Tokens in</span>
+                    <span className="font-mono text-sm text-amber-600">
+                      {formatNumber(usage.gpt52.tokensIn)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-amber-700">Tokens out</span>
+                    <span className="font-mono text-sm text-amber-600">
+                      {formatNumber(usage.gpt52.tokensOut)}
+                    </span>
+                  </div>
+                  <div className="border-t border-amber-200 pt-2">
+                    <div className="flex justify-between">
+                      <span className="text-sm font-medium text-amber-800">Custo</span>
+                      <span className="font-mono font-bold text-amber-900">
+                        {formatUsd(usage.gpt52.custoUsd)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* GPT-4o-mini (AI Filter) */}
+              <div className="rounded-xl border border-purple-200 bg-purple-50 p-5">
+                <div className="mb-3 flex items-center gap-2">
+                  <Filter size={20} className="text-purple-600" />
+                  <h4 className="font-semibold text-purple-900">GPT-4o-mini (Filter)</h4>
+                </div>
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-sm text-purple-700">Chamadas</span>
+                    <span className="font-mono font-semibold text-purple-900">
+                      {formatNumber(usage.gpt4oMini.chamadas)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-purple-700">Tokens in</span>
+                    <span className="font-mono text-sm text-purple-600">
+                      {formatNumber(usage.gpt4oMini.tokensIn)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm text-purple-700">Tokens out</span>
+                    <span className="font-mono text-sm text-purple-600">
+                      {formatNumber(usage.gpt4oMini.tokensOut)}
+                    </span>
+                  </div>
+                  <div className="border-t border-purple-200 pt-2">
+                    <div className="flex justify-between">
+                      <span className="text-sm font-medium text-purple-800">Custo</span>
+                      <span className="font-mono font-bold text-purple-900">
+                        {formatUsd(usage.gpt4oMini.custoUsd)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Tabela de preços de referência */}
+            <details className="group">
+              <summary className="cursor-pointer text-xs font-medium text-gray-500 hover:text-gray-700">
+                Referência de preços Azure
+              </summary>
+              <div className="mt-2 overflow-x-auto rounded-lg border border-gray-200">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-2 text-left font-medium text-gray-500">Serviço</th>
+                      <th className="px-4 py-2 text-left font-medium text-gray-500">Modelo</th>
+                      <th className="px-4 py-2 text-right font-medium text-gray-500">Input</th>
+                      <th className="px-4 py-2 text-right font-medium text-gray-500">Output</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    <tr>
+                      <td className="px-4 py-2 text-gray-700">Document Intelligence</td>
+                      <td className="px-4 py-2 text-gray-600">prebuilt-layout</td>
+                      <td className="px-4 py-2 text-right font-mono text-gray-700">$10/1K páginas</td>
+                      <td className="px-4 py-2 text-right text-gray-400">—</td>
+                    </tr>
+                    <tr>
+                      <td className="px-4 py-2 text-gray-700">Azure OpenAI</td>
+                      <td className="px-4 py-2 text-gray-600">GPT-5-mini</td>
+                      <td className="px-4 py-2 text-right font-mono text-gray-700">$0.40/1M tok</td>
+                      <td className="px-4 py-2 text-right font-mono text-gray-700">$1.60/1M tok</td>
+                    </tr>
+                    <tr>
+                      <td className="px-4 py-2 text-gray-700">Azure OpenAI</td>
+                      <td className="px-4 py-2 text-gray-600">GPT-5.2</td>
+                      <td className="px-4 py-2 text-right font-mono text-gray-700">$2.50/1M tok</td>
+                      <td className="px-4 py-2 text-right font-mono text-gray-700">$10/1M tok</td>
+                    </tr>
+                    <tr>
+                      <td className="px-4 py-2 text-gray-700">Azure OpenAI</td>
+                      <td className="px-4 py-2 text-gray-600">GPT-4o-mini</td>
+                      <td className="px-4 py-2 text-right font-mono text-gray-700">$2.50/1M tok</td>
+                      <td className="px-4 py-2 text-right font-mono text-gray-700">$10/1M tok</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          </div>
+        ) : null}
       </div>
 
       {/* Status Breakdown */}

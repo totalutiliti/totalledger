@@ -33,6 +33,35 @@ export interface GlobalDashboardResult {
   uploadsByTenant: { tenantNome: string; count: number }[];
 }
 
+export interface UsageMetricsResult {
+  periodo: { de: string; ate: string };
+  documentIntelligence: {
+    totalPaginas: number;
+    custoEstimadoUsd: number;
+    precoPor1000: number;
+  };
+  gptMini: {
+    chamadas: number;
+    tokensIn: number;
+    tokensOut: number;
+    custoUsd: number;
+  };
+  gpt52: {
+    chamadas: number;
+    tokensIn: number;
+    tokensOut: number;
+    custoUsd: number;
+  };
+  gpt4oMini: {
+    chamadas: number;
+    tokensIn: number;
+    tokensOut: number;
+    custoUsd: number;
+  };
+  custoTotalUsd: number;
+  totalUploadsProcessados: number;
+}
+
 interface ProcessamentoQuery extends PaginationDto {
   mesReferencia?: string;
   empresaId?: string;
@@ -94,6 +123,94 @@ export class DashboardService {
       totalCartoes,
       statusBreakdown,
       uploadsByTenant,
+    };
+  }
+
+  async getUsageMetrics(
+    de?: string,
+    ate?: string,
+    tenantId?: string,
+  ): Promise<UsageMetricsResult> {
+    this.logger.log(
+      `Fetching usage metrics: de=${de ?? 'all'}, ate=${ate ?? 'all'}, tenant=${tenantId ?? 'all'}`,
+    );
+
+    const where: Record<string, unknown> = {};
+    if (tenantId) where['tenantId'] = tenantId;
+    if (de || ate) {
+      where['createdAt'] = {
+        ...(de ? { gte: new Date(de) } : {}),
+        ...(ate ? { lte: new Date(`${ate}T23:59:59.999Z`) } : {}),
+      };
+    }
+
+    const aggregation = await this.prisma.pipelineMetrics.aggregate({
+      where,
+      _sum: {
+        totalPaginas: true,
+        chamadasGpt: true,
+        gptTokensIn: true,
+        gptTokensOut: true,
+        gptCustoDolar: true,
+        chamadasMini: true,
+        miniTokensIn: true,
+        miniTokensOut: true,
+        miniCustoDolar: true,
+        chamadasGpt52: true,
+        gpt52TokensIn: true,
+        gpt52TokensOut: true,
+        gpt52CustoDolar: true,
+      },
+      _count: { _all: true },
+      _min: { createdAt: true },
+      _max: { createdAt: true },
+    });
+
+    const s = aggregation._sum;
+    const totalPaginas = s.totalPaginas ?? 0;
+
+    // Azure DI pricing: prebuilt-layout = $10 per 1,000 pages
+    const diPrecoPor1000 = 10;
+    const diCustoUsd = (totalPaginas / 1000) * diPrecoPor1000;
+
+    const miniCusto = s.miniCustoDolar ?? 0;
+    const gpt52Custo = s.gpt52CustoDolar ?? 0;
+    const gptCusto = s.gptCustoDolar ?? 0;
+
+    const periodoMin = aggregation._min.createdAt ?? new Date();
+    const periodoMax = aggregation._max.createdAt ?? new Date();
+
+    return {
+      periodo: {
+        de: de ?? periodoMin.toISOString().slice(0, 10),
+        ate: ate ?? periodoMax.toISOString().slice(0, 10),
+      },
+      documentIntelligence: {
+        totalPaginas,
+        custoEstimadoUsd: Math.round(diCustoUsd * 100) / 100,
+        precoPor1000: diPrecoPor1000,
+      },
+      gptMini: {
+        chamadas: s.chamadasMini ?? 0,
+        tokensIn: s.miniTokensIn ?? 0,
+        tokensOut: s.miniTokensOut ?? 0,
+        custoUsd: Math.round(miniCusto * 100) / 100,
+      },
+      gpt52: {
+        chamadas: s.chamadasGpt52 ?? 0,
+        tokensIn: s.gpt52TokensIn ?? 0,
+        tokensOut: s.gpt52TokensOut ?? 0,
+        custoUsd: Math.round(gpt52Custo * 100) / 100,
+      },
+      gpt4oMini: {
+        chamadas: s.chamadasGpt ?? 0,
+        tokensIn: s.gptTokensIn ?? 0,
+        tokensOut: s.gptTokensOut ?? 0,
+        custoUsd: Math.round(gptCusto * 100) / 100,
+      },
+      custoTotalUsd:
+        Math.round((diCustoUsd + miniCusto + gpt52Custo + gptCusto) * 100) / 100,
+      totalUploadsProcessados: aggregation._count._all,
     };
   }
 

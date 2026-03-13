@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { AcaoRevisao, StatusRevisao, UploadStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { GroundTruthService } from '../ocr-pipeline/ground-truth.service';
 import { CorrigirBatidaDto } from './dto/corrigir-batida.dto';
 import {
   PaginationDto,
@@ -41,7 +42,10 @@ const ORIGINAL_FIELD_MAP: Record<string, string> = {
 export class RevisaoService {
   private readonly logger = new Logger(RevisaoService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly groundTruthService: GroundTruthService,
+  ) {}
 
   /** List CartaoPonto with statusRevisao PENDENTE or EM_REVISAO, with pagination. */
   async findPendentes(tenantId: string, filters: FindPendentesFilters) {
@@ -50,6 +54,7 @@ export class RevisaoService {
     const where = {
       tenantId,
       statusRevisao: { in: [StatusRevisao.PENDENTE, StatusRevisao.EM_REVISAO] },
+      batidas: { some: {} }, // Only show cartões that have at least 1 batida
       ...(empresaId ? { upload: { empresaId } } : {}),
       ...(uploadId ? { uploadId } : {}),
     };
@@ -59,7 +64,10 @@ export class RevisaoService {
         where,
         skip: (page - 1) * limit,
         take: limit,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [
+          { uploadId: 'asc' },
+          { paginaPdf: 'asc' },
+        ],
         include: {
           upload: {
             select: {
@@ -85,7 +93,22 @@ export class RevisaoService {
     const cartao = await this.prisma.cartaoPonto.findFirst({
       where: { id: cartaoPontoId, tenantId },
       include: {
-        batidas: { orderBy: { dia: 'asc' } },
+        batidas: {
+          orderBy: { dia: 'asc' },
+          include: {
+            ocrFeedback: {
+              select: {
+                id: true,
+                campo: true,
+                valorDi: true,
+                valorGpt: true,
+                valorFinal: true,
+                valorHumano: true,
+                concordaDiGpt: true,
+              },
+            },
+          },
+        },
         revisoes: {
           orderBy: { createdAt: 'desc' },
           include: { user: { select: { id: true, nome: true, email: true } } },
@@ -208,6 +231,24 @@ export class RevisaoService {
       // Create revisao records
       await tx.revisao.createMany({ data: revisaoRecords });
 
+      // Update OcrFeedback.valorHumano for corrected fields
+      for (const record of revisaoRecords) {
+        if (record.acao !== AcaoRevisao.CORRECAO || !record.campo) continue;
+
+        const originalField = ORIGINAL_FIELD_MAP[record.campo];
+        if (!originalField) continue;
+
+        await tx.ocrFeedback.updateMany({
+          where: {
+            batidaId,
+            campo: originalField,
+          },
+          data: {
+            valorHumano: record.valorNovo,
+          },
+        });
+      }
+
       // Set statusRevisao to EM_REVISAO if still PENDENTE
       if (cartao.statusRevisao === StatusRevisao.PENDENTE) {
         await tx.cartaoPonto.update({
@@ -296,6 +337,16 @@ export class RevisaoService {
       cartaoPontoId,
       userId,
     });
+
+    // Generate ground truth dataset from approved card (non-blocking)
+    this.groundTruthService
+      .generateFromApproval(cartaoPontoId, tenantId)
+      .catch((err: unknown) => {
+        this.logger.error('Falha ao gerar ground truth', {
+          cartaoPontoId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
 
     return result;
   }

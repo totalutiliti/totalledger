@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { TipoCartao } from '@prisma/client';
-import { OcrRawResult, OcrTable, OcrLine } from './document-intelligence.service';
+import { OcrRawResult, OcrTable, OcrTableCell, OcrLine } from './document-intelligence.service';
 
 export interface ParsedCard {
   header: ParsedHeader;
@@ -117,6 +117,26 @@ export class CardParserService {
     // Detect multi-row headers and find where data starts
     const { columnMap, dataStartRow } = this.detectHeadersAndMap(table);
 
+    this.logger.log('Column mapping result', {
+      columnMap,
+      dataStartRow,
+      tableRowCount: table.rowCount,
+      tableColumnCount: table.columnCount,
+      totalCells: table.cells.length,
+    });
+
+    // Log all header cells for debugging
+    const headerCells = table.cells.filter((c) => c.rowIndex < dataStartRow);
+    this.logger.debug('Header cells', {
+      headers: headerCells.map((c) => ({
+        row: c.rowIndex,
+        col: c.columnIndex,
+        span: c.columnSpan,
+        rowSpan: c.rowSpan,
+        content: c.content,
+      })),
+    });
+
     // Process data rows (skip header rows)
     for (let rowIdx = dataStartRow; rowIdx < table.rowCount; rowIdx++) {
       const rowCells = table.cells.filter((c) => c.rowIndex === rowIdx);
@@ -175,15 +195,36 @@ export class CardParserService {
       const saidaManha = this.normalizeTime(getCellContent('saidaManha'));
       const entradaTarde = this.normalizeTime(getCellContent('entradaTarde'));
       const saidaTarde = this.normalizeTime(getCellContent('saidaTarde'));
+      const entradaExtra = this.normalizeTime(getCellContent('entradaExtra'));
+      const saidaExtra = this.normalizeTime(getCellContent('saidaExtra'));
 
+      // Debug: log first 5 days and any day with missing data
+      const hasMissing = (!entradaManha || !saidaManha || !entradaTarde || !saidaTarde) &&
+        rowCells.some((c) => c.columnIndex !== columnMap.dia && c.content.trim().length > 0);
+      if (dia <= 5 || hasMissing) {
+        this.logger.debug(`Row debug dia=${dia}`, {
+          allCells: rowCells.map((c) => ({
+            col: c.columnIndex,
+            content: c.content,
+            confidence: c.confidence,
+          })),
+          mapped: {
+            entradaManha: { raw: getCellContent('entradaManha'), normalized: entradaManha, col: columnMap.entradaManha },
+            saidaManha: { raw: getCellContent('saidaManha'), normalized: saidaManha, col: columnMap.saidaManha },
+            entradaTarde: { raw: getCellContent('entradaTarde'), normalized: entradaTarde, col: columnMap.entradaTarde },
+            saidaTarde: { raw: getCellContent('saidaTarde'), normalized: saidaTarde, col: columnMap.saidaTarde },
+          },
+        });
+      }
 
-
-      // Detect if manuscrito based on confidence
+      // Detect if manuscrito based on confidence (all 6 fields)
       const avgConfidence = [
         getCellConfidence('entradaManha'),
         getCellConfidence('saidaManha'),
         getCellConfidence('entradaTarde'),
         getCellConfidence('saidaTarde'),
+        getCellConfidence('entradaExtra'),
+        getCellConfidence('saidaExtra'),
       ].filter((c) => c > 0);
 
       const avg =
@@ -199,13 +240,15 @@ export class CardParserService {
         saidaManha,
         entradaTarde,
         saidaTarde,
-        entradaExtra: this.normalizeTime(getCellContent('entradaExtra')),
-        saidaExtra: this.normalizeTime(getCellContent('saidaExtra')),
+        entradaExtra,
+        saidaExtra,
         confidences: {
           entradaManha: getCellConfidence('entradaManha'),
           saidaManha: getCellConfidence('saidaManha'),
           entradaTarde: getCellConfidence('entradaTarde'),
           saidaTarde: getCellConfidence('saidaTarde'),
+          entradaExtra: getCellConfidence('entradaExtra'),
+          saidaExtra: getCellConfidence('saidaExtra'),
         },
         isManuscrito,
       });
@@ -241,9 +284,17 @@ export class CardParserService {
 
     // Check if row 0 uses the "MANHÃ / TARDE / EXTRA" category layout
     const row0Contents = row0.map((c) => c.content.toLowerCase().trim());
-    const isMultiRowHeader =
+    const hasMultiRowCategories =
       row0Contents.some((c) => c.includes('manh')) ||
       row0Contents.some((c) => c.includes('tard'));
+    // Only detect multi-row via columnSpan if the spanning cells are category headers
+    // (not simple labels like "Dias" which can span day+weekday columns)
+    const hasCategorySpans = row0.some((c) => {
+      if ((c.columnSpan ?? 1) <= 1) return false;
+      const content = c.content.toLowerCase().trim();
+      return content.includes('manh') || content.includes('tard') || content.includes('extra');
+    });
+    const isMultiRowHeader = hasMultiRowCategories || (hasCategorySpans && row1.length > 0);
 
     if (isMultiRowHeader) {
       const columnMap = this.mapColumnsFromMultiRow(row0, row1);
@@ -272,82 +323,97 @@ export class CardParserService {
 
   /**
    * Map columns from a multi-row header layout.
-   * Row 0 has category headers (MANHÃ col 1-2, TARDE col 3-5, EXTRA col 6-7).
+   * Row 0 has category headers (MANHÃ col 1-2, TARDE col 3-4, EXTRA col 5-6)
+   * using columnSpan to indicate how many sub-columns each category covers.
    * Row 1 has "Entrada" / "Saída" sub-headers.
    * Column 0 is typically the day number.
    */
   private mapColumnsFromMultiRow(
-    row0: { columnIndex: number; content: string }[],
-    row1: { columnIndex: number; content: string }[],
+    row0: OcrTableCell[],
+    row1: OcrTableCell[],
   ): Record<string, number> {
     const map: Record<string, number> = {};
 
     // Column 0 is always the day (even if labeled "Normal" or has no label)
     map.dia = 0;
 
-    // Find category start columns from row 0
-    // Sort by column index to process in order (left → right)
-    const sortedRow0 = [...row0].sort((a, b) => a.columnIndex - b.columnIndex);
-    let manhaStartCol: number | undefined;
-    let tardeStartCol: number | undefined;
-    let extraStartCol: number | undefined;
+    // Build category ranges from row 0, using columnSpan to determine extent
+    // Each category cell covers [columnIndex, columnIndex + columnSpan - 1]
+    interface CategoryRange {
+      category: 'manha' | 'tarde' | 'extra';
+      startCol: number;
+      endCol: number; // inclusive
+    }
+    const categoryRanges: CategoryRange[] = [];
 
+    const sortedRow0 = [...row0].sort((a, b) => a.columnIndex - b.columnIndex);
     for (const cell of sortedRow0) {
       const c = cell.content.toLowerCase().trim();
+      const span = cell.columnSpan ?? 1;
+
+      let category: 'manha' | 'tarde' | 'extra' | null = null;
       if (c.includes('manh')) {
-        manhaStartCol = cell.columnIndex;
+        category = 'manha';
       } else if (c.includes('tard')) {
-        tardeStartCol = cell.columnIndex;
+        category = 'tarde';
       } else if (c === 'extra' || (c.includes('extra') && !c.includes('h.'))) {
-        // Match "EXTRA" but not "H. Extras" (which is a summary column)
-        extraStartCol = cell.columnIndex;
+        category = 'extra';
+      }
+
+      if (category) {
+        categoryRanges.push({
+          category,
+          startCol: cell.columnIndex,
+          endCol: cell.columnIndex + span - 1,
+        });
       }
     }
 
-    // Map sub-header "Entrada"/"Saída" within each category from row 1
-    // Use mutually exclusive ranges so each column maps to exactly one category
+    this.logger.debug('Category ranges from row0', { categoryRanges });
+
+    // Map sub-header "Entrada"/"Saída" from row 1, matched to category by column range
     for (const cell of row1) {
       const c = cell.content.toLowerCase().trim();
       const col = cell.columnIndex;
       const isEntrada = c.includes('entrada');
       const isSaida = c.includes('sa');
 
-      // Determine which category this column belongs to (mutually exclusive)
-      let category: 'manha' | 'tarde' | 'extra' | null = null;
+      if (!isEntrada && !isSaida) continue;
 
-      if (extraStartCol !== undefined && col >= extraStartCol) {
-        category = 'extra';
-      } else if (tardeStartCol !== undefined && col >= tardeStartCol) {
-        category = 'tarde';
-      } else if (manhaStartCol !== undefined && col >= manhaStartCol) {
-        category = 'manha';
-      }
+      // Find which category range this column belongs to
+      const range = categoryRanges.find((r) => col >= r.startCol && col <= r.endCol);
+      if (!range) continue;
 
-      if (category === 'manha') {
+      if (range.category === 'manha') {
         if (isEntrada) map.entradaManha = col;
         else if (isSaida) map.saidaManha = col;
-      } else if (category === 'tarde') {
+      } else if (range.category === 'tarde') {
         if (isEntrada) map.entradaTarde = col;
         else if (isSaida) map.saidaTarde = col;
-      } else if (category === 'extra') {
+      } else if (range.category === 'extra') {
         if (isEntrada) map.entradaExtra = col;
         else if (isSaida) map.saidaExtra = col;
       }
     }
 
-    // Fallback: if sub-headers didn't map well, use positional within each category
-    if (map.entradaManha === undefined && manhaStartCol !== undefined) {
-      map.entradaManha = manhaStartCol;
-      map.saidaManha = manhaStartCol + 1;
+    // Fallback: if sub-headers didn't map, use positional within each category range
+    for (const range of categoryRanges) {
+      const prefix =
+        range.category === 'manha' ? 'Manha' :
+        range.category === 'tarde' ? 'Tarde' : 'Extra';
+
+      const entradaKey = `entrada${prefix}`;
+      const saidaKey = `saida${prefix}`;
+
+      if (map[entradaKey] === undefined) {
+        map[entradaKey] = range.startCol;
+        if (range.endCol > range.startCol) {
+          map[saidaKey] = range.startCol + 1;
+        }
+      }
     }
-    if (map.entradaTarde === undefined && tardeStartCol !== undefined) {
-      map.entradaTarde = tardeStartCol;
-      map.saidaTarde = tardeStartCol + 1;
-    }
-    if (map.entradaExtra === undefined && extraStartCol !== undefined) {
-      map.entradaExtra = extraStartCol;
-      map.saidaExtra = extraStartCol + 1;
-    }
+
+    this.logger.debug('Final column map (multi-row)', { map });
 
     return map;
   }
@@ -356,37 +422,57 @@ export class CardParserService {
    * Map columns from a single header row (the original logic, improved).
    */
   private mapColumnsSingleRow(
-    headerCells: { columnIndex: number; content: string }[],
+    headerCells: OcrTableCell[],
   ): Record<string, number> {
     const map: Record<string, number> = {};
 
-    for (const cell of headerCells) {
+    // Sort by column index to process left-to-right
+    const sorted = [...headerCells].sort((a, b) => a.columnIndex - b.columnIndex);
+
+    for (const cell of sorted) {
       const content = cell.content.toLowerCase().trim();
+      const span = cell.columnSpan ?? 1;
 
       if (content.includes('dia') && !content.includes('sem')) {
         map.dia = cell.columnIndex;
+        // If "Dias" spans 2 columns, the second column is diaSemana
+        if (span >= 2) {
+          map.diaSemana = cell.columnIndex + 1;
+        }
       } else if (content.includes('sem') || content.includes('d.s')) {
         map.diaSemana = cell.columnIndex;
-      } else if (!map.entradaManha && content.includes('entrada')) {
+      } else if (map.entradaManha === undefined && content.includes('entrada')) {
         map.entradaManha = cell.columnIndex;
-      } else if (!map.saidaManha && content.includes('sa') && !map.entradaTarde) {
+      } else if (
+        map.entradaManha !== undefined &&
+        map.saidaManha === undefined &&
+        (content.includes('sa') || content.includes('saída') || content.includes('saida'))
+      ) {
         map.saidaManha = cell.columnIndex;
-      } else if (map.saidaManha !== undefined && content.includes('entrada')) {
+      } else if (map.saidaManha !== undefined && map.entradaTarde === undefined && content.includes('entrada')) {
         map.entradaTarde = cell.columnIndex;
-      } else if (map.entradaTarde !== undefined && content.includes('sa')) {
+      } else if (
+        map.entradaTarde !== undefined &&
+        map.saidaTarde === undefined &&
+        (content.includes('sa') || content.includes('saída') || content.includes('saida'))
+      ) {
         map.saidaTarde = cell.columnIndex;
+      } else if (content.includes('extra')) {
+        if (map.entradaExtra === undefined) {
+          map.entradaExtra = cell.columnIndex;
+        }
       }
     }
 
     // Fallback: if no specific mapping, assume positional order
-    if (map.dia === undefined && headerCells.length >= 6) {
+    if (map.dia === undefined && sorted.length >= 6) {
       map.dia = 0;
       map.diaSemana = 1;
       map.entradaManha = 2;
       map.saidaManha = 3;
       map.entradaTarde = 4;
       map.saidaTarde = 5;
-      if (headerCells.length >= 8) {
+      if (sorted.length >= 8) {
         map.entradaExtra = 6;
         map.saidaExtra = 7;
       }
@@ -451,7 +537,7 @@ export class CardParserService {
       }
     }
 
-    return value; // Return as-is if can't parse
+    return null; // Can't parse — return null, let TimeSanitizer handle correction
   }
 
   private detectTipoCartao(batidas: ParsedBatida[]): TipoCartao {
